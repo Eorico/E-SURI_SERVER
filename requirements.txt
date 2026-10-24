@@ -1,0 +1,17 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+supabase>=2.7
+pydantic>=2.8
+pydantic-settings>=2.4
+pyjwt>=2.9
+python-multipart>=0.0.9
+opencv-python-headless>=4.10
+numpy>=2.0
+pyzbar>=0.1.9
+reportlab>=4.2
+pandas>=2.2
+openai>=1.40          # template mapping only; optional at runtime
+email-validator>=2.0
+openpyxl>=3.1
