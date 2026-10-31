@@ -47,7 +47,20 @@ copy .env.example .env
 Fill in `.env` from your Supabase project (Project Settings -> API, and
 Settings -> Database for `DATABASE_URL`).
 
-Then apply the migrations **in order**, via the Supabase SQL editor or `psql`:
+Then apply the migrations. `scripts/migrate.py` runs them in order, records each
+in `public.schema_migrations`, and skips anything already applied:
+
+```bash
+python scripts/migrate.py --status     # what has run, what is pending
+python scripts/migrate.py --dry-run    # what would run, changing nothing
+python scripts/migrate.py              # apply everything pending
+```
+
+Use the **direct** connection string (port 5432) or the session pooler for
+`DATABASE_URL`. The transaction pooler (6543) cannot hold the session state that
+`create function` and `alter table` need, and the script warns if it sees it.
+
+The files, in order:
 
 | File | What it does |
 | --- | --- |

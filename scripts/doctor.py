@@ -13,9 +13,16 @@ more, so the output is safe to paste into a chat or an issue.
 
 from __future__ import annotations
 
-import sys
 import traceback
 from dataclasses import dataclass, field
+
+# Run as `python scripts/<name>.py` from the backend folder: Python puts this
+# file's own directory on sys.path, not the project root, so `api` would not be
+# importable without this.
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import create_engine, text
 
@@ -138,14 +145,22 @@ def check_database(report: Report) -> None:
                 )
             ).scalars().all()
             unprotected = sorted(set(unprotected) & expected)
-            if unprotected:
+            if missing:
+                # With no tables the query above is vacuously satisfied, which
+                # would read as "RLS is on everywhere" when nothing exists yet.
+                report.add(
+                    WARN,
+                    "row-level security",
+                    "not checked - the tables do not exist yet",
+                )
+            elif unprotected:
                 report.add(
                     FAIL,
                     "row-level security",
                     f"off on: {', '.join(unprotected)} - run 0002_rls.sql",
                 )
             else:
-                report.add(OK, "row-level security", "enabled on every table")
+                report.add(OK, "row-level security", f"enabled on all {len(expected)} tables")
 
             # --- helper functions ---------------------------------------
             functions = set(

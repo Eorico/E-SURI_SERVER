@@ -321,9 +321,11 @@ create policy submissions_read on public.submissions
     using (public.can_read_assessment(assessment_id));
 
 drop policy if exists answer_sheets_read on public.answer_sheets;
+-- An answer sheet belongs to an assessment and a learner, not to a submission:
+-- it is printed before anyone sits the test, so it exists before any scan does.
 create policy answer_sheets_read on public.answer_sheets
     for select to authenticated
-    using (public.can_read_submission(submission_id));
+    using (public.can_read_assessment(assessment_id));
 
 drop policy if exists responses_read on public.responses;
 create policy responses_read on public.responses

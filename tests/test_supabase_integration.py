@@ -258,3 +258,62 @@ def test_doctor_checks_every_policy_helper():
         f"doctor is out of step; only in migration: {sorted(declared - set(EXPECTED_FUNCTIONS))}, "
         f"only in doctor: {sorted(set(EXPECTED_FUNCTIONS) - declared)}"
     )
+
+
+def test_every_index_in_the_schema_names_a_real_column():
+    """A hand-written index on a column that does not exist took the whole
+    migration down once - DDL runs in one transaction, so one bad line stops
+    all 19 tables from being created."""
+    sql = read("0001_schema.sql")
+    statements = re.findall(
+        r"create index(?: if not exists)? \w+\s+on\s+(?:public\.)?(\w+)\s*\(([^)]+)\)",
+        sql,
+        re.I,
+    )
+    assert statements, "no index statements found"
+
+    problems = []
+    for table, columns in statements:
+        if table not in Base.metadata.tables:
+            problems.append(f"unknown table {table}")
+            continue
+        known = set(Base.metadata.tables[table].columns.keys())
+        for column in (c.strip() for c in columns.split(",")):
+            if column not in known:
+                problems.append(f"{table}.{column}")
+    assert not problems, f"indexes naming columns that do not exist: {problems}"
+
+
+def test_every_table_named_in_the_rls_file_exists():
+    sql = read("0002_rls.sql")
+    referenced = set(re.findall(r"public\.(\w+)", sql))
+    helpers = set(re.findall(r"create or replace function public\.(\w+)\(", sql))
+    tables = referenced - helpers - {"schema_migrations"}
+    unknown = sorted(t for t in tables if t not in Base.metadata.tables)
+    assert not unknown, f"0002_rls.sql references tables that do not exist: {unknown}"
+
+
+def test_every_column_referenced_in_the_rls_file_exists():
+    """The same bug that broke 0001 (an index on a column that does not exist)
+    was also present here: `answer_sheets` has no `submission_id`."""
+    sql = read("0002_rls.sql")
+    tables = Base.metadata.tables
+    aliases = dict(re.findall(r"(?:from|join)\s+public\.(\w+)\s+(\w+)", sql))
+
+    problems = []
+
+    # qualified references: `c.teacher_id`, `answer_sheets.assessment_id`
+    for ident, column in re.findall(r"\b(\w+)\.(\w+)\b", sql):
+        if ident in ("public", "auth", "pg_catalog"):
+            continue
+        table = aliases.get(ident, ident)
+        if table in tables and column not in tables[table].columns:
+            problems.append(f"{ident}.{column} (table {table})")
+
+    # a policy's own columns, passed bare to a helper
+    for table, body in re.findall(r"create policy \w+ on public\.(\w+)(.*?);", sql, re.S):
+        for column in re.findall(r"public\.\w+\((\w+)\)", body):
+            if column not in tables[table].columns:
+                problems.append(f"{table}: helper argument {column}")
+
+    assert not problems, f"RLS references columns that do not exist: {sorted(set(problems))}"

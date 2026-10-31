@@ -24,7 +24,14 @@ Supabase's own `auth` schema or exist only in Postgres:
 from __future__ import annotations
 
 import enum
+
+# Run as `python scripts/<name>.py` from the backend folder: Python puts this
+# file's own directory on sys.path, not the project root, so `api` would not be
+# importable without this.
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -84,15 +91,42 @@ alter table public.profiles
 alter table public.profiles
     add constraint fk_profiles_id_auth_users
     foreign key (id) references auth.users (id) on delete cascade;
-
--- A school runs one assessment cycle at a time; these are the lookups every
--- screen makes, so they are worth the write cost.
-create index if not exists ix_classes_teacher on public.classes (teacher_id);
-create index if not exists ix_classes_area on public.classes (learning_area_id);
-create index if not exists ix_enrollments_class on public.enrollments (class_id);
-create index if not exists ix_submissions_student on public.submissions (student_id);
-create index if not exists ix_responses_submission on public.responses (submission_id);
 """
+
+#: Lookups the screens make constantly that no existing constraint already
+#: indexes. Every (table, column) here is checked against the models before the
+#: file is written - a hand-written index on a column that does not exist took
+#: down the whole migration once, because DDL runs in one transaction.
+#:
+#: A UNIQUE constraint already creates a btree, and Postgres can use its leading
+#: column, so there is no entry here for a column that is the first column of a
+#: unique constraint - that index would be pure write cost.
+EXTRA_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("ix_classes_teacher", "classes", "teacher_id"),
+    ("ix_classes_area", "classes", "learning_area_id"),
+    # Enrollment is to a SECTION, not a class. The unique constraint leads with
+    # student_id, so section_id lookups ("who is in this section?") need this.
+    ("ix_enrollments_section", "enrollments", "section_id"),
+    # uq_submissions_assessment_student leads with assessment_id, so a
+    # per-learner lookup across assessments is not covered by it.
+    ("ix_submissions_student", "submissions", "student_id"),
+)
+
+
+def extra_indexes() -> str:
+    """Render the hand-chosen indexes, refusing any that names a real column wrong."""
+    lines = ["\n-- Lookups every screen makes, not already covered by a constraint."]
+    for name, table, column in EXTRA_INDEXES:
+        if table not in Base.metadata.tables:
+            raise SystemExit(f"EXTRA_INDEXES names an unknown table: {table}")
+        if column not in Base.metadata.tables[table].columns:
+            known = ", ".join(Base.metadata.tables[table].columns.keys())
+            raise SystemExit(
+                f"EXTRA_INDEXES names an unknown column: {table}.{column}\n"
+                f"  {table} has: {known}"
+            )
+        lines.append(f"create index if not exists {name} on public.{table} ({column});")
+    return "\n".join(lines) + "\n"
 
 
 def check_constraints() -> str:
@@ -129,6 +163,7 @@ def render() -> str:
 
     parts.append(check_constraints())
     parts.append(FOOTER)
+    parts.append(extra_indexes())
     return "\n".join(parts)
 
 

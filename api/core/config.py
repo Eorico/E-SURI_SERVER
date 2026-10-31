@@ -8,17 +8,32 @@ rather than on the first request that needs the missing key.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _split_csv(value: str | list[str]) -> list[str]:
     """Accept either a JSON list or a plain comma-separated string from .env."""
     if isinstance(value, list):
         return value
+    value = value.strip()
+    if value.startswith("["):
+        # Still allow the JSON form, since NoDecode turned off the automatic one.
+        import json
+
+        return [str(item).strip() for item in json.loads(value)]
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+#: A list that is written as `a,b,c` in `.env`.
+#:
+#: `NoDecode` is what makes `_split_csv` run at all. Without it pydantic-settings
+#: JSON-decodes every complex field inside the *source*, before field validators
+#: are reached, so a plain comma-separated line raised `SettingsError` and the
+#: server would not start — exactly the format `.env.example` documents.
+CsvList = Annotated[list[str], NoDecode]
 
 
 class Settings(BaseSettings):
@@ -47,12 +62,12 @@ class Settings(BaseSettings):
 
     # --- HTTP -------------------------------------------------------------
     API_PREFIX: str = "/api/v1"
-    CORS_ORIGINS: list[str] = ["http://localhost:8080"]
-    TRUSTED_HOSTS: list[str] = ["*"]
+    CORS_ORIGINS: CsvList = ["http://localhost:8080"]
+    TRUSTED_HOSTS: CsvList = ["*"]
     #: Hard ceiling on a request body. Answer-sheet photos are the largest input.
     MAX_REQUEST_BYTES: int = 8 * 1024 * 1024
     MAX_UPLOAD_BYTES: int = 6 * 1024 * 1024
-    ALLOWED_UPLOAD_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"]
+    ALLOWED_UPLOAD_TYPES: CsvList = ["image/jpeg", "image/png", "image/webp"]
 
     # --- Rate limiting ----------------------------------------------------
     #: Every limit uses the same five-minute window.
@@ -75,7 +90,7 @@ class Settings(BaseSettings):
     REPORT_TEMPLATE_BUCKET: str = "report-templates"
     #: Uploaded templates are workbooks, not photos, so they get their own cap.
     MAX_TEMPLATE_BYTES: int = 12 * 1024 * 1024
-    ALLOWED_TEMPLATE_TYPES: list[str] = [
+    ALLOWED_TEMPLATE_TYPES: CsvList = [
         "application/vnd.ms-excel.sheet.macroEnabled.12",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ]

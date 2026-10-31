@@ -19,7 +19,14 @@ from __future__ import annotations
 
 import argparse
 import getpass
+
+# Run as `python scripts/<name>.py` from the backend folder: Python puts this
+# file's own directory on sys.path, not the project root, so `api` would not be
+# importable without this.
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.core.config import settings
 from api.core.database import SessionLocal

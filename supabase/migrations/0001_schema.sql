@@ -391,10 +391,9 @@ alter table public.profiles
     add constraint fk_profiles_id_auth_users
     foreign key (id) references auth.users (id) on delete cascade;
 
--- A school runs one assessment cycle at a time; these are the lookups every
--- screen makes, so they are worth the write cost.
+
+-- Lookups every screen makes, not already covered by a constraint.
 create index if not exists ix_classes_teacher on public.classes (teacher_id);
 create index if not exists ix_classes_area on public.classes (learning_area_id);
-create index if not exists ix_enrollments_class on public.enrollments (class_id);
+create index if not exists ix_enrollments_section on public.enrollments (section_id);
 create index if not exists ix_submissions_student on public.submissions (student_id);
-create index if not exists ix_responses_submission on public.responses (submission_id);
