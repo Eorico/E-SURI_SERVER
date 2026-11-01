@@ -1,7 +1,7 @@
 """Domain enumerations and the constants tied to them.
 
-Kept apart from `tables.py` so services and DTOs can import the vocabulary
-without pulling in SQLAlchemy.
+Kept apart from `documents.py` so services and DTOs can import the vocabulary
+without pulling in the document models or the database driver.
 """
 
 from __future__ import annotations
@@ -9,8 +9,39 @@ from __future__ import annotations
 import enum
 
 
+class AdminType(str, enum.Enum):
+    """What kind of administrator someone is.
+
+    All three hold the `administrator` role and everything a subject teacher
+    can do; they differ in how far they can see and what they may close.
+
+    - `assessment_coordinator` runs the cycle: opens and closes a term, sees
+      every report, releases certificates.
+    - `master_teacher` sees their own department and nothing else - the filter
+      that makes their analytics useful rather than school-wide noise.
+    - `school_head` reads the overall EQWART and downloads it; they do not
+      administer the cycle.
+    """
+
+    assessment_coordinator = "assessment_coordinator"
+    master_teacher = "master_teacher"
+    school_head = "school_head"
+
+
+class TermStatus(str, enum.Enum):
+    """A term is open for scanning and encoding, or closed to it."""
+
+    open = "open"
+    closed = "closed"
+
+
 class UserRole(str, enum.Enum):
-    """The three roles in the capstone document."""
+    """The three roles in the capstone document.
+
+    `administrator` is split further by `AdminType`: an assessment
+    coordinator, a master teacher and a school head all hold this role but
+    see different amounts of the school.
+    """
 
     subject_teacher = "subject_teacher"
     subject_coordinator = "subject_coordinator"

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from api.core.exceptions import ConflictError, NotFoundError, ValidationError
 from api.models.enums import AssessmentStatus, ResponseFlag, SubmissionStatus
-from api.models.tables import Assessment, Response, Student, Submission
+from api.models.documents import Assessment, Response, Student, Submission
 from api.repositories.assessment_repository import AnswerKeyRepository, AssessmentRepository
 from api.repositories.class_repository import ClassRepository
 from api.repositories.student_repository import StudentRepository

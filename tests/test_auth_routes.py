@@ -1,12 +1,14 @@
 """The sign-in flow the frontend depends on.
 
-The browser holds no Supabase credential, so these routes are the only way into
+The browser holds no database credential, so these routes are the only way into
 the system. What they must guarantee is covered here: a session is issued, the
 school's own rules (unknown profile, deactivated account) are applied on top of
-Supabase's answer, the password never comes back out, and the attempt budget is
-the five-minute one.
+the credential check, the password never comes back out, and the attempt budget
+is the five-minute one.
 
-Supabase is stubbed, so the suite runs with no project, no network and no keys.
+The gateway is stubbed, so these run with no database and no network. The real
+gateway is exercised against an in-process MongoDB in `test_email_flows.py`,
+and the whole stack over HTTP in `test_api_smoke.py`.
 """
 
 from __future__ import annotations
@@ -33,7 +35,14 @@ class StubProfile:
     def __init__(self, *, is_active: bool = True) -> None:
         self.id = USER_ID
         self.role = UserRole.subject_teacher
-        self.full_name = "Maria Dela Cruz"
+        self.last_name = "Dela Cruz"
+        self.first_name = "Maria"
+        self.middle_initial = "S"
+        self.suffix = None
+        # Assembled by the real model; the stub states them so ProfileOut can
+        # be validated without a database row.
+        self.full_name = "Maria S. Dela Cruz"
+        self.formal_name = "Dela Cruz, Maria S."
         self.username = "mdelacruz"
         self.email = "maria@paliparan3.deped.gov.ph"
         self.phone = None
@@ -51,7 +60,7 @@ class StubProfiles:
 
 
 class StubGateway:
-    """Stands in for Supabase Auth, and records what it was asked."""
+    """Stands in for the credential layer, and records what it was asked."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -77,7 +86,7 @@ class StubGateway:
 def use_service(*, profile: StubProfile | None) -> StubGateway:
     """Point the app at a stubbed service and hand back its gateway."""
     gateway = StubGateway()
-    service = AuthService(gateway, StubProfiles(profile), None, None)
+    service = AuthService(gateway, StubProfiles(profile), None, None, None)
     app.dependency_overrides[get_auth_service] = lambda: service
     return gateway
 
@@ -108,6 +117,9 @@ def test_login_returns_a_session_and_the_profile(client):
     assert body["expires_in"] == 3600
     # The workspace can be rendered without a second request.
     assert body["profile"]["username"] == "mdelacruz"
+    assert body["profile"]["last_name"] == "Dela Cruz"
+    assert body["profile"]["first_name"] == "Maria"
+    assert body["profile"]["full_name"] == "Maria S. Dela Cruz"
     assert body["profile"]["role"] == UserRole.subject_teacher.value
     assert gateway.calls == [("sign_in", "maria@x.ph")]
 
@@ -127,7 +139,7 @@ def test_wrong_password_is_rejected_without_a_token(client):
 
 
 def test_account_unknown_to_this_school_is_rejected(client):
-    """Supabase accepts the credentials, but there is no profile to act with."""
+    """The credentials are accepted, but there is no profile to act with."""
     use_service(profile=None)
 
     assert login(client).status_code == 401
@@ -201,3 +213,70 @@ def test_rate_limited_response_reports_the_window(client):
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "300"
+
+
+# --------------------------------------------------------------------------- #
+# Signing in by username (administrators)                                      #
+# --------------------------------------------------------------------------- #
+class UsernameProfiles(StubProfiles):
+    """Resolves a username the way the real repository does."""
+
+    def by_username(self, username):
+        profile = self._profile if hasattr(self, "_profile") else None
+        profile = profile or getattr(self, "profile", None)
+        if profile is not None and profile.username == username:
+            return profile
+        return None
+
+
+def use_username_service(*, profile: StubProfile | None):
+    gateway = StubGateway()
+    profiles = UsernameProfiles(profile)
+    profiles.profile = profile
+    service = AuthService(gateway, profiles, None, None, None)
+    app.dependency_overrides[get_auth_service] = lambda: service
+    return gateway
+
+
+def test_administrator_can_sign_in_with_a_username(client):
+    gateway = use_username_service(profile=StubProfile())
+
+    response = client.post(
+        "/api/v1/auth/login", json={"username": "mdelacruz", "password": PASSWORD}
+    )
+
+    assert response.status_code == 200, response.text
+    # Accounts are keyed by email, so the username had to be resolved first.
+    assert gateway.calls == [("sign_in", "maria@paliparan3.deped.gov.ph")]
+
+
+def test_an_unknown_username_reads_like_a_wrong_password(client):
+    """Otherwise the form says which names are taken."""
+    use_username_service(profile=StubProfile())
+
+    response = client.post(
+        "/api/v1/auth/login", json={"username": "nobody", "password": PASSWORD}
+    )
+
+    assert response.status_code == 401
+    assert "not accepted" in response.text
+
+
+def test_sending_both_an_email_and_a_username_is_rejected(client):
+    """Which one identifies the account when they disagree? Refuse to guess."""
+    use_username_service(profile=StubProfile())
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "maria@x.ph", "username": "mdelacruz", "password": PASSWORD},
+    )
+
+    assert response.status_code == 422
+
+
+def test_sending_neither_is_rejected(client):
+    use_username_service(profile=StubProfile())
+
+    response = client.post("/api/v1/auth/login", json={"password": PASSWORD})
+
+    assert response.status_code == 422

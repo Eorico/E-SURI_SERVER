@@ -21,7 +21,7 @@ from api.models.enums import (
     InterventionMode,
     ReportStatus,
 )
-from api.models.tables import EqwartReport, LeastMastered
+from api.models.documents import EqwartReport, LeastMastered
 from api.repositories.analysis_repository import (
     EqwartReportRepository,
     ItemAnalysisRepository,

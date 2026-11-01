@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 
+from api.core.cache import stats as cache_stats
 from api.core.config import settings
-from api.core.database import get_db
+from api.core.mongo import ping
 
 router = APIRouter(tags=["health"])
 
@@ -18,10 +17,24 @@ def health() -> dict:
 
 
 @router.get("/health/ready", summary="Readiness probe")
-def ready(db: Session = Depends(get_db)) -> dict:
-    """Confirms the database answers before traffic is sent here."""
+def ready() -> dict:
+    """Confirms the database answers before traffic is sent here.
+
+    Reports the round-trip time as well as the verdict, because the usual
+    problem with a managed cluster is not that it is down but that it is far
+    away - and a readiness probe that only says "ok" hides that.
+    """
     try:
-        db.execute(text("SELECT 1"))
+        latency = ping()
     except Exception:
         return {"status": "degraded", "database": "unreachable"}
-    return {"status": "ok", "database": "ok"}
+
+    # Counters only - hit rate, entry count - so this is safe to expose. A low
+    # hit rate under real traffic is the signal that something is invalidating
+    # more than it needs to.
+    return {
+        "status": "ok",
+        "database": "ok",
+        "latency_ms": latency,
+        "cache": cache_stats(),
+    }

@@ -2,7 +2,8 @@
 
 Every figure the EQWART workbook and the dashboards show is computed here, with
 the same rounding the template uses, so the API and the exported sheet always
-agree (DRY). Pure functions over plain numbers — no ORM, no I/O, easy to test.
+agree (DRY). Pure functions over plain numbers — no database, no I/O, easy
+to test.
 """
 
 from __future__ import annotations

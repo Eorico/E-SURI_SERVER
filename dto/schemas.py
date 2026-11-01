@@ -12,7 +12,7 @@ import uuid
 # would otherwise shadow the type in their own annotations.
 from datetime import date as date_type, datetime
 
-from pydantic import EmailStr, Field, field_validator
+from pydantic import EmailStr, Field, field_validator, model_validator
 
 from api.models.enums import (
     AssessmentStatus,
@@ -39,8 +39,34 @@ SAFE_NAME = re.compile(r"^[\w\s.,'()\-ÑñÁÉÍÓÚáéíóú]+$", re.UNICODE)
 # --------------------------------------------------------------------------- #
 # Auth                                                                         #
 # --------------------------------------------------------------------------- #
-class RegisterRequest(DTO):
-    full_name: str = Field(min_length=2, max_length=160)
+class NameParts(DTO):
+    """A person's name, as DepEd records it.
+
+    Stored in parts because every official list sorts on the surname and the
+    middle initial is printed separately; a single `full_name` string cannot be
+    split back apart reliably (compound surnames like "Dela Cruz" break it).
+    """
+
+    last_name: str = Field(min_length=1, max_length=80)
+    first_name: str = Field(min_length=1, max_length=80)
+    middle_initial: str | None = Field(default=None, max_length=8)
+    #: DepEd's "name extension": Jr., Sr., III. Optional - most staff have none.
+    suffix: str | None = Field(default=None, max_length=16)
+
+    @field_validator("last_name", "first_name", "middle_initial", "suffix")
+    @classmethod
+    def _clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not SAFE_NAME.match(value):
+            raise ValueError("That name contains characters we cannot accept")
+        return value
+
+
+class RegisterRequest(NameParts):
     username: str = Field(min_length=3, max_length=64)
     email: EmailStr
     password: str = Field(min_length=12, max_length=128)
@@ -55,13 +81,6 @@ class RegisterRequest(DTO):
             raise ValueError("Use letters, numbers, dot, dash or underscore only")
         return value.lower()
 
-    @field_validator("full_name")
-    @classmethod
-    def _name(cls, value: str) -> str:
-        if not SAFE_NAME.match(value):
-            raise ValueError("That name contains characters we cannot accept")
-        return value
-
     @field_validator("password")
     @classmethod
     def _strength(cls, value: str) -> str:
@@ -73,8 +92,50 @@ class RegisterRequest(DTO):
 
 
 class LoginRequest(DTO):
-    email: EmailStr
+    """Sign in with an email address, or with a username.
+
+    Administrators sign in by username; everyone else uses their school email.
+    Exactly one of the two is required - accepting both would leave it ambiguous
+    which identifies the account when they disagree.
+    """
+
+    email: EmailStr | None = None
+    username: str | None = Field(default=None, min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def _slug(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if not value:
+            return None
+        if not SAFE_SLUG.match(value):
+            raise ValueError("Use letters, numbers, dot, dash or underscore only")
+        return value
+
+    @model_validator(mode="after")
+    def _exactly_one_identifier(self) -> "LoginRequest":
+        if bool(self.email) == bool(self.username):
+            raise ValueError("Provide either an email address or a username, not both")
+        return self
+
+
+class VerifyCodeRequest(DTO):
+    """The six digits mailed at registration."""
+
+    email: EmailStr
+    code: str = Field(min_length=4, max_length=12)
+
+    @field_validator("code")
+    @classmethod
+    def _digits(cls, value: str) -> str:
+        # People paste it with a space in the middle, and that is not an error.
+        value = "".join(ch for ch in value if ch.isdigit())
+        if not value:
+            raise ValueError("Enter the code from your email")
+        return value
 
 
 class RefreshRequest(DTO):
@@ -85,28 +146,70 @@ class PasswordResetRequest(DTO):
     email: EmailStr
 
 
+class PasswordResetConfirm(DTO):
+    """The token from a reset link, and the password to set with it.
+
+    New: this step used to be hosted by the sign-in provider, so the API never
+    saw it. Authentication is this server's now, so the whole flow is.
+    """
+
+    token: str = Field(min_length=16, max_length=512)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class ResendCodeRequest(DTO):
+    """Ask for a fresh registration code, replacing any still outstanding."""
+
+    email: EmailStr
+
+
 class ProfileOut(ORMDto):
     id: uuid.UUID
     role: UserRole
-    full_name: str | None = None
+    last_name: str
+    first_name: str
+    middle_initial: str | None = None
+    suffix: str | None = None
+    #: Assembled by the model from the parts above, so the UI never has to.
+    full_name: str
+    formal_name: str
     username: str | None = None
     email: str | None = None
     phone: str | None = None
     is_active: bool
     school_id: uuid.UUID | None = None
+    #: Present for a subject coordinator; null for every other role, because it
+    #: lives in `coordinator_assignments` rather than on the profile.
     learning_area_id: uuid.UUID | None = None
 
 
 class ProfileUpdate(DTO):
-    full_name: str | None = Field(default=None, min_length=2, max_length=160)
+    """Only what a person may change about themselves. Role is not here."""
+
+    last_name: str | None = Field(default=None, min_length=1, max_length=80)
+    first_name: str | None = Field(default=None, min_length=1, max_length=80)
+    middle_initial: str | None = Field(default=None, max_length=8)
+    suffix: str | None = Field(default=None, max_length=16)
     phone: str | None = Field(default=None, max_length=32)
+
+    @field_validator("last_name", "first_name", "middle_initial", "suffix")
+    @classmethod
+    def _clean(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not SAFE_NAME.match(value):
+            raise ValueError("That name contains characters we cannot accept")
+        return value
 
 
 class SessionOut(ORMDto):
     """What the browser stores after signing in or refreshing.
 
-    The tokens come from Supabase but reach the client through this API, which
-    is the only party holding Supabase credentials. The profile rides along so
+    The tokens are issued by this API, which is the only party holding the
+    signing key and the database credential. The profile rides along so
     the app can render the right workspace without a second round trip.
     """
 
@@ -134,6 +237,29 @@ class LearningAreaOut(ORMDto):
     name: str
     sheet_name: str
     grade_level: int
+
+
+class LearningAreaCreate(DTO):
+    """A new subject. Creating one adds its sheet to the EQWART workbook."""
+
+    name: str = Field(min_length=2, max_length=160)
+    code: str = Field(min_length=2, max_length=32)
+    #: The worksheet tab this subject writes into. Defaults to the name.
+    sheet_name: str | None = Field(default=None, max_length=64)
+    grade_level: int = Field(default=11, ge=7, le=12)
+
+    @field_validator("code")
+    @classmethod
+    def _code(cls, value: str) -> str:
+        value = value.strip().upper()
+        if not SAFE_SLUG.match(value):
+            raise ValueError("Use letters, numbers, dot, dash or underscore only")
+        return value
+
+    @field_validator("name", "sheet_name")
+    @classmethod
+    def _clean(cls, value: str | None) -> str | None:
+        return value.strip() if value else None
 
 
 class SectionOut(ORMDto):

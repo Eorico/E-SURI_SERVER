@@ -22,6 +22,10 @@ class RateLimitTier(str, Enum):
     """Route classes. Names match the RATE_LIMIT_* settings."""
 
     AUTH = "auth"
+    #: Renewing a session, not guessing a credential. Separate from AUTH
+    #: because a token expiring mid-session is routine and happens once per
+    #: lifetime per tab, while a sign-in attempt is the thing worth throttling.
+    SESSION = "session"
     SCAN = "scan"
     WRITE = "write"
     READ = "read"

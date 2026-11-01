@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
-from utils.omr.template_mapping import SheetMapping, TemplateMapping
+from utils.omr.template_mapping import MappingError, SheetMapping, TemplateMapping
 
 
 def set_cell(sheet: Worksheet, coordinate: str, value) -> None:
@@ -92,17 +92,60 @@ class EqwartExporter:
         self.template = template
         self.mapping = mapping
 
+    #: Sheets that are a layout to copy rather than a learning area's own page.
+    #: DepEd ships the workbook as one of these; a subject's sheet is a copy of
+    #: it, which is why adding a subject adds a sheet.
+    LAYOUT_SHEET_NAMES = ("Blank Sheet", "BLANK SHEET", "Blank", "Template")
+
     def export(self, sheets: list[EqwartSheetData]) -> bytes:
         workbook = load_workbook(self.template, keep_vba=True)
+        layout = self._layout_sheet(workbook)
 
         for data in sheets:
             if data.sheet_name not in workbook.sheetnames:
-                raise KeyError(f"The template has no sheet named {data.sheet_name!r}.")
-            self._write_sheet(workbook[data.sheet_name], data, self.mapping.sheet_for(data.sheet_name))
+                if layout is None:
+                    raise KeyError(
+                        f"The template has no sheet named {data.sheet_name!r}, and no "
+                        f"blank sheet to copy one from."
+                    )
+                # A new subject gets its own page, cut from the blank one, so
+                # the formulas and the legend come with it.
+                copy = workbook.copy_worksheet(workbook[layout])
+                copy.title = data.sheet_name
+            self._write_sheet(
+                workbook[data.sheet_name], data, self._plan_for(data.sheet_name, layout)
+            )
+
+        # The layout itself is scaffolding, not a learning area, so it does not
+        # travel to CSDO - unless removing it would leave an empty workbook.
+        if layout is not None and layout not in {data.sheet_name for data in sheets}:
+            if len(workbook.sheetnames) > 1:
+                del workbook[layout]
 
         buffer = io.BytesIO()
         workbook.save(buffer)
         return buffer.getvalue()
+
+    def _plan_for(self, sheet_name: str, layout: str | None) -> SheetMapping:
+        """The geometry to write this sheet with.
+
+        A sheet copied from the layout has the layout's geometry, so it uses
+        the layout's plan — the mapping only ever describes the blank sheet,
+        because that is the only one the template shipped with.
+        """
+        try:
+            return self.mapping.sheet_for(sheet_name)
+        except MappingError:
+            if layout is None:
+                raise
+            return self.mapping.sheet_for(layout)
+
+    def _layout_sheet(self, workbook) -> str | None:
+        for name in self.LAYOUT_SHEET_NAMES:
+            if name in workbook.sheetnames:
+                return name
+        # A workbook with exactly one sheet is itself the layout.
+        return workbook.sheetnames[0] if len(workbook.sheetnames) == 1 else None
 
     # --- per sheet --------------------------------------------------------
     def _write_sheet(self, sheet: Worksheet, data: EqwartSheetData, plan: SheetMapping) -> None:

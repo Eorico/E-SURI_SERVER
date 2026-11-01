@@ -11,10 +11,11 @@ from __future__ import annotations
 from functools import lru_cache
 
 from fastapi import Depends
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from api.core.config import settings
-from api.core.database import get_db
+from api.core.mongo import get_db
+from api.repositories.auth_repository import EmailTokenRepository, SessionRepository
 from api.repositories.analysis_repository import (
     CertificateRepository,
     EqwartReportRepository,
@@ -28,7 +29,10 @@ from api.repositories.assessment_repository import (
 )
 from api.repositories.audit_repository import AuditRepository
 from api.repositories.class_repository import ClassRepository
-from api.repositories.profile_repository import ProfileRepository
+from api.repositories.profile_repository import (
+    CoordinatorAssignmentRepository,
+    ProfileRepository,
+)
 from api.repositories.school_repository import (
     LearningAreaRepository,
     SchoolRepository,
@@ -39,7 +43,7 @@ from api.repositories.template_repository import ReportTemplateRepository
 from api.repositories.submission_repository import ResponseRepository, SubmissionRepository
 from api.services.analysis_service import AnalysisService
 from api.services.assessment_service import AssessmentService
-from api.services.auth_service import AuthService, SupabaseAuthGateway
+from api.services.auth_service import AuthService, MongoAuthGateway
 from api.services.certificate_service import CertificateService
 from api.services.class_service import ClassService
 from api.services.eqwart_service import EqwartService
@@ -47,9 +51,9 @@ from api.services.ai.template_mapper import OpenAIMapperGateway, TemplateMapperS
 from api.services.scan_service import ScanService
 from api.services.template_service import TemplateService
 from api.services.storage_service import (
+    GridFsObjectStore,
     InMemoryObjectStore,
     StorageService,
-    SupabaseObjectStore,
 )
 from utils.omr.scanner import build_scanner
 
@@ -65,9 +69,15 @@ def get_scanner():
 
 @lru_cache
 def get_storage() -> StorageService:
-    """Supabase when configured, otherwise an in-memory store for local runs."""
-    configured = bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY)
-    store = SupabaseObjectStore() if configured else InMemoryObjectStore()
+    """GridFS when a cluster is configured, otherwise an in-memory store.
+
+    The in-memory store is what lets the suite and a bare local run work with
+    no database at all. The check is on the URI rather than on reachability:
+    deciding at start-up whether the cluster answers would make the choice
+    depend on a network call, and a cluster that is briefly unreachable must
+    not silently downgrade a real deployment to storing files in a dictionary.
+    """
+    store = GridFsObjectStore() if settings.MONGODB_URI else InMemoryObjectStore()
     return StorageService(store)
 
 
@@ -80,7 +90,7 @@ def get_template_mapper() -> TemplateMapperService:
 # --------------------------------------------------------------------------- #
 # Services                                                                     #
 # --------------------------------------------------------------------------- #
-def get_class_service(db: Session = Depends(get_db)) -> ClassService:
+def get_class_service(db: Database = Depends(get_db)) -> ClassService:
     return ClassService(
         classes=ClassRepository(db),
         sections=SectionRepository(db),
@@ -90,7 +100,7 @@ def get_class_service(db: Session = Depends(get_db)) -> ClassService:
     )
 
 
-def get_assessment_service(db: Session = Depends(get_db)) -> AssessmentService:
+def get_assessment_service(db: Database = Depends(get_db)) -> AssessmentService:
     return AssessmentService(
         assessments=AssessmentRepository(db),
         answer_keys=AnswerKeyRepository(db),
@@ -98,7 +108,7 @@ def get_assessment_service(db: Session = Depends(get_db)) -> AssessmentService:
     )
 
 
-def get_analysis_service(db: Session = Depends(get_db)) -> AnalysisService:
+def get_analysis_service(db: Database = Depends(get_db)) -> AnalysisService:
     return AnalysisService(
         assessments=AssessmentRepository(db),
         submissions=SubmissionRepository(db),
@@ -107,7 +117,7 @@ def get_analysis_service(db: Session = Depends(get_db)) -> AnalysisService:
     )
 
 
-def get_scan_service(db: Session = Depends(get_db)) -> ScanService:
+def get_scan_service(db: Database = Depends(get_db)) -> ScanService:
     return ScanService(
         assessments=AssessmentRepository(db),
         assessment_service=get_assessment_service(db),
@@ -121,7 +131,7 @@ def get_scan_service(db: Session = Depends(get_db)) -> ScanService:
     )
 
 
-def get_certificate_service(db: Session = Depends(get_db)) -> CertificateService:
+def get_certificate_service(db: Database = Depends(get_db)) -> CertificateService:
     return CertificateService(
         submissions=SubmissionRepository(db),
         certificates=CertificateRepository(db),
@@ -129,16 +139,21 @@ def get_certificate_service(db: Session = Depends(get_db)) -> CertificateService
     )
 
 
-def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
+def get_auth_service(db: Database = Depends(get_db)) -> AuthService:
     return AuthService(
-        gateway=SupabaseAuthGateway(),
+        gateway=MongoAuthGateway(
+            profiles=ProfileRepository(db),
+            sessions=SessionRepository(db),
+            email_tokens=EmailTokenRepository(db),
+        ),
         profiles=ProfileRepository(db),
         schools=SchoolRepository(db),
         learning_areas=LearningAreaRepository(db),
+        assignments=CoordinatorAssignmentRepository(db),
     )
 
 
-def get_eqwart_service(db: Session = Depends(get_db)) -> EqwartService:
+def get_eqwart_service(db: Database = Depends(get_db)) -> EqwartService:
     return EqwartService(
         reports=EqwartReportRepository(db),
         least_mastered=LeastMasteredRepository(db),
@@ -155,7 +170,7 @@ def get_eqwart_service(db: Session = Depends(get_db)) -> EqwartService:
 # --------------------------------------------------------------------------- #
 # Repositories used directly by read-only endpoints                            #
 # --------------------------------------------------------------------------- #
-def get_template_service(db: Session = Depends(get_db)) -> TemplateService:
+def get_template_service(db: Database = Depends(get_db)) -> TemplateService:
     return TemplateService(
         templates=ReportTemplateRepository(db),
         mapper=get_template_mapper(),
@@ -163,33 +178,33 @@ def get_template_service(db: Session = Depends(get_db)) -> TemplateService:
     )
 
 
-def get_profiles(db: Session = Depends(get_db)) -> ProfileRepository:
+def get_profiles(db: Database = Depends(get_db)) -> ProfileRepository:
     return ProfileRepository(db)
 
 
-def get_schools(db: Session = Depends(get_db)) -> SchoolRepository:
+def get_schools(db: Database = Depends(get_db)) -> SchoolRepository:
     return SchoolRepository(db)
 
 
-def get_learning_areas(db: Session = Depends(get_db)) -> LearningAreaRepository:
+def get_learning_areas(db: Database = Depends(get_db)) -> LearningAreaRepository:
     return LearningAreaRepository(db)
 
 
-def get_sections(db: Session = Depends(get_db)) -> SectionRepository:
+def get_sections(db: Database = Depends(get_db)) -> SectionRepository:
     return SectionRepository(db)
 
 
-def get_students(db: Session = Depends(get_db)) -> StudentRepository:
+def get_students(db: Database = Depends(get_db)) -> StudentRepository:
     return StudentRepository(db)
 
 
-def get_submissions(db: Session = Depends(get_db)) -> SubmissionRepository:
+def get_submissions(db: Database = Depends(get_db)) -> SubmissionRepository:
     return SubmissionRepository(db)
 
 
-def get_answer_sheets(db: Session = Depends(get_db)) -> AnswerSheetRepository:
+def get_answer_sheets(db: Database = Depends(get_db)) -> AnswerSheetRepository:
     return AnswerSheetRepository(db)
 
 
-def get_audit(db: Session = Depends(get_db)) -> AuditRepository:
+def get_audit(db: Database = Depends(get_db)) -> AuditRepository:
     return AuditRepository(db)

@@ -18,11 +18,32 @@ from api.core.rate_limit import RateLimitTier, limiter
 from api.core.security import client_ip
 
 #: Paths that must stay reachable for health checks and docs.
-EXEMPT_PREFIXES = ("/api/v1/health", "/docs", "/redoc", "/openapi.json")
+#: Paths that are never metered. Interactive docs, and the liveness probe -
+#: which answers from memory and touches nothing.
+EXEMPT_PREFIXES = ("/docs", "/redoc", "/openapi.json")
+EXEMPT_PATHS = ("/api/v1/health",)
+
+
+def is_exempt(path: str) -> bool:
+    """Whether a path bypasses the limiter entirely.
+
+    Liveness is matched exactly rather than by prefix, deliberately. Readiness
+    lives under the same prefix and pings the cluster on every call, so
+    exempting the prefix would leave an unauthenticated endpoint that anyone
+    could use to make the database do work - a load amplifier pointed at the
+    one thing in the system that is hardest to scale. It is metered on the READ
+    tier instead, which is three hundred calls per five minutes: far more than
+    any load balancer needs and far less than a flood.
+    """
+    return path in EXEMPT_PATHS or path.startswith(EXEMPT_PREFIXES)
 
 
 def tier_for(request: Request) -> RateLimitTier:
     path = request.url.path
+    # Renewing or ending a session is not a credential attempt, so it does
+    # not share the sign-in budget.
+    if path.endswith("/auth/refresh") or path.endswith("/auth/logout"):
+        return RateLimitTier.SESSION
     if "/auth/" in path:
         return RateLimitTier.AUTH
     if "/scan" in path or path.endswith("/submissions/upload"):
@@ -54,7 +75,7 @@ def _caller_key(request: Request) -> str:
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if not settings.RATE_LIMIT_ENABLED or request.url.path.startswith(EXEMPT_PREFIXES):
+        if not settings.RATE_LIMIT_ENABLED or is_exempt(request.url.path):
             return await call_next(request)
 
         tier = tier_for(request)

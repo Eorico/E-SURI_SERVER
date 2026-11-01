@@ -21,7 +21,7 @@ from api.models.enums import (
     AssessmentStatus,
     AssessmentType,
 )
-from api.models.tables import AnswerKey, Assessment
+from api.models.documents import AnswerKey, Assessment
 from api.repositories.assessment_repository import AnswerKeyRepository, AssessmentRepository
 from api.repositories.class_repository import ClassRepository
 

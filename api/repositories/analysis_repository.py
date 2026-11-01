@@ -4,23 +4,24 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from pymongo import ASCENDING
 
+from api.models.documents import (
+    Certificate,
+    EqwartReport,
+    ItemAnalysis,
+    LeastMastered,
+)
 from api.models.enums import AssessmentType, CertificateStatus
-from api.models.tables import Certificate, EqwartReport, ItemAnalysis, LeastMastered
-from api.repositories.base import SqlRepository
+from api.repositories.base import EmbeddedRepository, MongoRepository
 
 
-class ItemAnalysisRepository(SqlRepository[ItemAnalysis]):
+class ItemAnalysisRepository(MongoRepository[ItemAnalysis]):
     model = ItemAnalysis
+    default_sort = (("item_no", ASCENDING),)
 
     def for_assessment(self, assessment_id: uuid.UUID) -> list[ItemAnalysis]:
-        stmt = (
-            select(ItemAnalysis)
-            .filter_by(assessment_id=assessment_id)
-            .order_by(ItemAnalysis.item_no)
-        )
-        return list(self.db.scalars(stmt))
+        return self.list(assessment_id=assessment_id)
 
     def replace_for_assessment(
         self, assessment_id: uuid.UUID, rows: list[ItemAnalysis]
@@ -30,17 +31,22 @@ class ItemAnalysisRepository(SqlRepository[ItemAnalysis]):
         return self.add_all(rows)
 
     def weakest(self, assessment_id: uuid.UUID, limit: int) -> list[ItemAnalysis]:
-        """The lowest-scoring items — the least mastered."""
-        stmt = (
-            select(ItemAnalysis)
-            .filter_by(assessment_id=assessment_id)
-            .order_by(ItemAnalysis.percent_correct.asc(), ItemAnalysis.item_no.asc())
+        """The lowest-scoring items — the least mastered.
+
+        Sorted on the server rather than in Python: the item number is the
+        tie-break, so two items at the same percentage always come back in the
+        same order and the five a coordinator encodes do not shuffle between
+        two runs of the same report.
+        """
+        cursor = (
+            self.collection.find({"assessment_id": assessment_id})
+            .sort([("percent_correct", ASCENDING), ("item_no", ASCENDING)])
             .limit(limit)
         )
-        return list(self.db.scalars(stmt))
+        return self._many(cursor)
 
 
-class EqwartReportRepository(SqlRepository[EqwartReport]):
+class EqwartReportRepository(MongoRepository[EqwartReport]):
     model = EqwartReport
 
     def find(
@@ -56,18 +62,27 @@ class EqwartReportRepository(SqlRepository[EqwartReport]):
         return self.list(school_year=school_year)
 
 
-class LeastMasteredRepository(SqlRepository[LeastMastered]):
+class LeastMasteredRepository(EmbeddedRepository[LeastMastered]):
+    """The five least-mastered competencies, inside their report.
+
+    Embedded: there are at most five, they are read with the report every time,
+    and `position` orders them rather than being queried on.
+    """
+
     model = LeastMastered
+    parent_model = EqwartReport
+    array_field = "least_mastered"
+    parent_key = "report_id"
+    order_by = "position"
 
     def for_report(self, report_id: uuid.UUID) -> list[LeastMastered]:
-        stmt = select(LeastMastered).filter_by(report_id=report_id).order_by(LeastMastered.position)
-        return list(self.db.scalars(stmt))
+        return self.for_parent(report_id)
 
     def at_position(self, report_id: uuid.UUID, position: int) -> LeastMastered | None:
         return self.first(report_id=report_id, position=position)
 
 
-class CertificateRepository(SqlRepository[Certificate]):
+class CertificateRepository(MongoRepository[Certificate]):
     model = Certificate
 
     def for_class(self, class_id: uuid.UUID) -> list[Certificate]:

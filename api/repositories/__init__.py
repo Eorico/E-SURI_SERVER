@@ -12,9 +12,12 @@ from api.repositories.assessment_repository import (
     AssessmentRepository,
 )
 from api.repositories.audit_repository import AuditRepository
-from api.repositories.base import Repository, SqlRepository
+from api.repositories.base import EmbeddedRepository, MongoRepository, Repository
 from api.repositories.class_repository import ClassRepository
-from api.repositories.profile_repository import ProfileRepository
+from api.repositories.profile_repository import (
+    CoordinatorAssignmentRepository,
+    ProfileRepository,
+)
 from api.repositories.school_repository import (
     LearningAreaRepository,
     SchoolRepository,
@@ -31,18 +34,20 @@ __all__ = [
     "AuditRepository",
     "CertificateRepository",
     "ClassRepository",
+    "CoordinatorAssignmentRepository",
+    "EmbeddedRepository",
     "EnrollmentRepository",
     "EqwartReportRepository",
     "ItemAnalysisRepository",
     "LearningAreaRepository",
     "LeastMasteredRepository",
+    "MongoRepository",
     "ProfileRepository",
     "ReportTemplateRepository",
     "Repository",
     "ResponseRepository",
     "SchoolRepository",
     "SectionRepository",
-    "SqlRepository",
     "StudentRepository",
     "SubmissionRepository",
 ]

@@ -24,7 +24,7 @@ from api.core.config import settings
 from api.core.exceptions import ConflictError, NotFoundError, ValidationError
 from api.core.logging import get_logger
 from api.models.enums import MappingSource, TemplateStatus
-from api.models.tables import ReportTemplate
+from api.models.documents import ReportTemplate
 from api.repositories.template_repository import ReportTemplateRepository
 from api.services.ai.template_mapper import TemplateMapperService
 from utils.omr.eqwart_export import EqwartExporter, EqwartSheetData, SectionColumn
@@ -344,5 +344,5 @@ class TemplateService:
                 raise NotFoundError("The stored template file is missing.")
             return data
         raise ConflictError(
-            "Downloading a stored template needs Supabase storage to be configured."
+            "Downloading a stored template needs file storage to be configured."
         )

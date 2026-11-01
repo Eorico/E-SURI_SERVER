@@ -1,6 +1,6 @@
 """Shared DTO building blocks.
 
-DTOs are the only shapes that cross the HTTP boundary. ORM models never do, so
+DTOs are the only shapes that cross the HTTP boundary. Documents never do, so
 a column added to a table cannot accidentally become public.
 """
 
@@ -22,7 +22,12 @@ class DTO(BaseModel):
 
 
 class ORMDto(BaseModel):
-    """Response DTOs: built straight from ORM instances."""
+    """Response DTOs: built straight from document instances.
+
+    `from_attributes` is what lets a route hand a document straight to a DTO,
+    including its computed properties - `full_name` is assembled rather than
+    stored, and this is how it reaches the client.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 

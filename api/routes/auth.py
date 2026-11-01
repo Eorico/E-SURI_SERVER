@@ -1,12 +1,14 @@
 """Sign-in, registration, password recovery and the caller's own profile.
 
 This API is the frontend's only credential. The browser is configured with one
-value — the address of this service — and holds no Supabase URL or key, so the
-sign-in and refresh grants are proxied here with the keys that live in
-`backend/.env`. Supabase still issues the tokens; only this service may ask it.
+value - the address of this service - and holds no database URI and no signing
+key, so every exchange happens here with what lives in `backend/.env`. This
+service issues the tokens as well as verifying them; see `api/core/tokens.py`.
 
-Every route below is on the AUTH rate-limit tier: ten attempts per caller per
-five-minute window, applied by path in the rate-limit middleware.
+Most routes below are on the AUTH rate-limit tier: ten attempts per caller per
+five-minute window. Renewing and ending a session are on SESSION instead, which
+is far more generous, because a token expiring mid-session is routine while a
+sign-in attempt is the thing worth throttling.
 """
 
 from __future__ import annotations
@@ -24,12 +26,15 @@ from api.services.auth_service import AuthService, AuthSession
 from dto.common import Message
 from dto.schemas import (
     LoginRequest,
+    PasswordResetConfirm,
     PasswordResetRequest,
     ProfileOut,
     ProfileUpdate,
     RefreshRequest,
     RegisterRequest,
+    ResendCodeRequest,
     SessionOut,
+    VerifyCodeRequest,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -49,12 +54,28 @@ def _session_response(session: AuthSession, profile) -> SessionOut:
 def login(payload: LoginRequest, service: AuthService = Depends(get_auth_service)) -> SessionOut:
     """Exchange credentials for a session.
 
-    The password reaches Supabase through this service and is never stored or
-    logged here. A wrong password, an unknown address and a deactivated account
-    are reported the same way, so the endpoint cannot be used to discover who
-    holds an account at the school.
+    Takes an email address, or a username for administrators. Either way the
+    password is checked against an Argon2id hash and is never stored in the
+    clear, echoed, or logged. A wrong password, an unknown address, an unknown username and
+    a deactivated account are reported the same way, so the endpoint cannot be
+    used to discover who holds an account at the school.
     """
-    session, profile = service.sign_in(email=payload.email, password=payload.password)
+    session, profile = service.sign_in(
+        email=payload.email, username=payload.username, password=payload.password
+    )
+    return _session_response(session, profile)
+
+
+@router.post("/verify-code", response_model=SessionOut)
+def verify_code(
+    payload: VerifyCodeRequest, service: AuthService = Depends(get_auth_service)
+) -> SessionOut:
+    """Finish a registration with the code that was emailed.
+
+    Verifying confirms the address and signs the person in, so there is no
+    second step asking for the password they chose a moment ago.
+    """
+    session, profile = service.verify_signup_code(email=payload.email, code=payload.code)
     return _session_response(session, profile)
 
 
@@ -83,20 +104,22 @@ def logout(
 
 @router.post("/register", response_model=ProfileOut, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, service: AuthService = Depends(get_auth_service)) -> ProfileOut:
-    """Self-service sign-up. Always creates a subject teacher.
+    """Self-service sign-up, with the role the form asked for.
 
-    A privileged role is granted afterwards by an administrator, so a caller
-    cannot make themselves a coordinator by editing the request.
+    The account is created unconfirmed: a six-digit code goes to the address,
+    and `/auth/verify-code` is what turns it into a usable account.
     """
     profile = service.register(
-        full_name=payload.full_name,
+        last_name=payload.last_name,
+        first_name=payload.first_name,
+        middle_initial=payload.middle_initial,
+        suffix=payload.suffix,
         username=payload.username,
         email=payload.email,
         password=payload.password,
         role=payload.role,
         school_id=payload.school_id,
         learning_area_id=payload.learning_area_id,
-        allow_privileged=False,
     )
     return ProfileOut.model_validate(profile)
 
@@ -108,6 +131,34 @@ def request_password_reset(
     """Always reports success, so the endpoint cannot enumerate accounts."""
     service.request_password_reset(payload.email)
     return Message(message="If that account exists, a reset link is on its way.")
+
+
+@router.post("/password-reset/confirm", response_model=Message)
+def confirm_password_reset(
+    payload: PasswordResetConfirm, service: AuthService = Depends(get_auth_service)
+) -> Message:
+    """Set a new password from a reset link.
+
+    The token is single-use and spent whether or not the new password is
+    accepted, so a link cannot be replayed. Completing a reset also ends every
+    other session on the account: whoever knew the old password may be holding
+    a refresh token, and taking the password away has to take that with it.
+    """
+    service.complete_password_reset(token=payload.token, password=payload.password)
+    return Message(message="Your password has been changed. Sign in with it now.")
+
+
+@router.post("/resend-code", response_model=Message)
+def resend_signup_code(
+    payload: ResendCodeRequest, service: AuthService = Depends(get_auth_service)
+) -> Message:
+    """Mail a fresh registration code.
+
+    Reports success whether or not the address is registered, and whether or
+    not it is already confirmed - for the same reason `password-reset` does.
+    """
+    service.resend_signup_code(email=payload.email)
+    return Message(message="If that account is awaiting confirmation, a new code is on its way.")
 
 
 @router.get("/me", response_model=ProfileOut)
@@ -134,9 +185,9 @@ def list_users(
     return [ProfileOut.model_validate(p) for p in profiles.list()]
 
 
-@router.post("/users/{profile_id}/role", response_model=ProfileOut)
+@router.post("/users/{user_id}/role", response_model=ProfileOut)
 def assign_role(
-    profile_id: uuid.UUID,
+    user_id: uuid.UUID,
     role: UserRole,
     learning_area_id: uuid.UUID | None = None,
     _: Principal = Depends(require_admin),
@@ -144,5 +195,5 @@ def assign_role(
 ) -> ProfileOut:
     """Administrator action: promote a colleague and scope them if needed."""
     return ProfileOut.model_validate(
-        service.assign_role(profile_id=profile_id, role=role, learning_area_id=learning_area_id)
+        service.assign_role(user_id=user_id, role=role, learning_area_id=learning_area_id)
     )

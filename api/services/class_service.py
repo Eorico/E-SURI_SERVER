@@ -13,7 +13,7 @@ import uuid
 from api.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
 from api.core.security import Principal
 from api.models.enums import EnrollmentStatus, UserRole
-from api.models.tables import Class, Enrollment, Section, Student
+from api.models.documents import Class, Enrollment, Section, Student
 from api.repositories.class_repository import ClassRepository
 from api.repositories.school_repository import LearningAreaRepository, SectionRepository
 from api.repositories.student_repository import EnrollmentRepository, StudentRepository
@@ -117,6 +117,9 @@ class ClassService:
             enrollment.student_id
             for enrollment in self.enrollments.active_in_section(record.section_id)
         }
+        # Both membership checks are sets resolved up front, so enrolling a
+        # whole section is two queries rather than two per learner.
+        real = self.students.existing_ids(list(student_ids))
         fresh = [
             Enrollment(
                 student_id=student_id,
@@ -124,7 +127,7 @@ class ClassService:
                 status=EnrollmentStatus.active,
             )
             for student_id in student_ids
-            if student_id not in existing and self.students.get(student_id) is not None
+            if student_id not in existing and student_id in real
         ]
         return self.enrollments.add_all(fresh) if fresh else []
 

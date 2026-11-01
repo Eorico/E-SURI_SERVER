@@ -11,7 +11,12 @@ from __future__ import annotations
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from pymongo.errors import (
+    DuplicateKeyError,
+    ExecutionTimeout,
+    PyMongoError,
+    ServerSelectionTimeoutError,
+)
 
 from api.core.logging import get_logger, request_id_var
 
@@ -68,7 +73,7 @@ class RateLimitedError(DomainError):
 
 
 class UpstreamError(DomainError):
-    """Supabase, storage or another dependency failed."""
+    """The database, storage or another dependency failed."""
 
     status_code = status.HTTP_502_BAD_GATEWAY
     code = "upstream_error"
@@ -108,16 +113,47 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_body("validation_error", "The request body failed validation.", {"fields": safe}),
         )
 
-    @app.exception_handler(IntegrityError)
-    async def _integrity(_: Request, exc: IntegrityError) -> JSONResponse:
-        logger.warning("integrity_error", extra={"detail": str(exc.orig)})
+    @app.exception_handler(DuplicateKeyError)
+    async def _duplicate(_: Request, exc: DuplicateKeyError) -> JSONResponse:
+        """A unique index refused the write.
+
+        What `IntegrityError` used to catch. The message stays generic on
+        purpose: the index name would say which field collided, and on the
+        registration form that is how you discover which email addresses and
+        usernames are already taken.
+        """
+        logger.warning("duplicate_key", extra={"detail": str(exc.details)})
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content=_body("conflict", "That record conflicts with one that already exists."),
         )
 
-    @app.exception_handler(SQLAlchemyError)
-    async def _database(_: Request, exc: SQLAlchemyError) -> JSONResponse:
+    @app.exception_handler(ServerSelectionTimeoutError)
+    async def _unreachable(_: Request, exc: ServerSelectionTimeoutError) -> JSONResponse:
+        """No cluster member could be reached inside the timeout.
+
+        Separated from the general driver error because it is the one a
+        deployment actually hits - a wrong URI, an IP that is not on the Atlas
+        access list, or a cluster that has been paused - and it should read as
+        "not reachable" rather than as a fault in the request.
+        """
+        logger.error("mongo_unreachable", extra={"detail": str(exc)})
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_body("database_unavailable", "The database is not reachable right now."),
+        )
+
+    @app.exception_handler(ExecutionTimeout)
+    async def _too_slow(_: Request, exc: ExecutionTimeout) -> JSONResponse:
+        """An operation outran its time limit - the old statement_timeout."""
+        logger.warning("mongo_timeout", extra={"detail": str(exc)})
+        return JSONResponse(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            content=_body("database_timeout", "That took too long. Narrow it and try again."),
+        )
+
+    @app.exception_handler(PyMongoError)
+    async def _database(_: Request, exc: PyMongoError) -> JSONResponse:
         logger.exception("database_error", exc_info=exc)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

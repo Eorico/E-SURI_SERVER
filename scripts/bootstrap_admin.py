@@ -1,17 +1,22 @@
 """Create the first administrator.
 
-    python scripts/bootstrap_admin.py --email you@deped.gov.ph --name "Your Name"
+    python scripts/bootstrap_admin.py --email you@deped.gov.ph \
+        --last-name Dela-Cruz --first-name Maria
 
 Roles are handed out by an administrator, which leaves the first one with
-nobody to grant it — so it is made here, on the server, by whoever holds the
-service-role key. Everyone else registers through the app and is promoted by
-this account.
+nobody to grant it - so it is made here, on the server, by whoever is setting
+the system up. Everyone else registers through the app and is promoted by this
+account.
 
-The password is read from a prompt, never from an argument: anything typed on
-a command line lands in the shell's history file. It is sent to Supabase and
-not stored, logged or echoed here.
+The password is read from a prompt, never from an argument: anything typed on a
+command line lands in the shell's history file. It is hashed with Argon2id and
+neither stored in the clear, logged, nor echoed.
 
-Safe to re-run: if the account already exists it is promoted rather than
+`--type` picks which kind of administrator. The default is the assessment
+coordinator, because that is the one who can open a term - and until a term is
+open, nothing else in the system can be used.
+
+Safe to re-run: an account that already exists is promoted rather than
 duplicated.
 """
 
@@ -19,21 +24,22 @@ from __future__ import annotations
 
 import argparse
 import getpass
-
-# Run as `python scripts/<name>.py` from the backend folder: Python puts this
-# file's own directory on sys.path, not the project root, so `api` would not be
-# importable without this.
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.core.config import settings
-from api.core.database import SessionLocal
-from api.models.enums import UserRole
-from api.repositories.profile_repository import ProfileRepository
+from api.core.mongo import get_database, ping
+from api.models.documents import AdministratorProfile
+from api.models.enums import AdminType, UserRole
+from api.repositories.auth_repository import EmailTokenRepository, SessionRepository
+from api.repositories.profile_repository import (
+    CoordinatorAssignmentRepository,
+    ProfileRepository,
+)
 from api.repositories.school_repository import LearningAreaRepository, SchoolRepository
-from api.services.auth_service import AuthService, SupabaseAuthGateway
+from api.services.auth_service import AuthService, MongoAuthGateway
 
 MIN_PASSWORD = 12
 
@@ -50,59 +56,124 @@ def read_password() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create or promote the first administrator.")
     parser.add_argument("--email", required=True)
-    parser.add_argument("--name", required=True, help="Full name, as it should appear on reports")
+    parser.add_argument("--last-name", required=True, help="Surname")
+    parser.add_argument("--first-name", required=True, help="Given name")
+    parser.add_argument("--middle-initial", help="Middle initial, if any")
+    parser.add_argument("--suffix", help="Name extension: Jr., Sr., III")
     parser.add_argument("--username", help="Defaults to the part of the email before @")
+    parser.add_argument(
+        "--type",
+        choices=[kind.value for kind in AdminType],
+        default=AdminType.assessment_coordinator.value,
+        help="Which kind of administrator (default: assessment_coordinator)",
+    )
+    parser.add_argument(
+        "--department",
+        help="Department code, required for --type master_teacher (e.g. SCIENCE)",
+    )
     args = parser.parse_args()
 
-    for key in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "DATABASE_URL"):
-        if not getattr(settings, key):
-            sys.exit(f"{key} is not set. Configure backend/.env first, then run scripts/doctor.py.")
+    if not settings.MONGODB_URI:
+        sys.exit("MONGODB_URI is not set. Configure backend/.env, then run scripts/doctor.py.")
+    if len(settings.JWT_SECRET) < 32:
+        sys.exit(
+            "JWT_SECRET is not set (or is too short). Without it no token can be signed.\n"
+            'Generate one:  python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )
 
+    try:
+        ping()
+    except Exception as exc:
+        sys.exit(f"Cannot reach the cluster: {exc}\nRun scripts/doctor.py for the usual causes.")
+
+    admin_type = AdminType(args.type)
     email = args.email.strip().lower()
     username = (args.username or email.split("@")[0]).strip().lower()
 
-    session = SessionLocal()
-    try:
-        profiles = ProfileRepository(session)
-        service = AuthService(
-            SupabaseAuthGateway(),
-            profiles,
-            SchoolRepository(session),
-            LearningAreaRepository(session),
+    db = get_database()
+    profiles = ProfileRepository(db)
+    schools = SchoolRepository(db)
+
+    department_id = None
+    if admin_type is AdminType.master_teacher:
+        if not args.department:
+            sys.exit("A master teacher oversees one department. Pass --department CODE.")
+        school = schools.current()
+        found = db["departments"].find_one(
+            {"code": args.department.strip().upper(), "school_id": str(school.id) if school else None}
+        )
+        if found is None:
+            known = sorted(d["code"] for d in db["departments"].find({}, {"code": 1}))
+            sys.exit(
+                f"No department with code {args.department!r}. "
+                f"Known: {', '.join(known) or 'none - run scripts/seed.py'}"
+            )
+        department_id = found["_id"]
+    elif args.department:
+        sys.exit(
+            f"--department applies only to a master teacher; "
+            f"a {admin_type.value} sees the whole school."
         )
 
-        existing = profiles.by_email(email)
-        if existing is not None:
-            if existing.role is UserRole.administrator:
-                print(f"{email} is already an administrator.")
-                return 0
-            service.assign_role(profile_id=existing.id, role=UserRole.administrator)
-            session.commit()
-            print(f"Promoted {email} to administrator.")
+    service = AuthService(
+        gateway=MongoAuthGateway(
+            profiles=profiles,
+            sessions=SessionRepository(db),
+            email_tokens=EmailTokenRepository(db),
+        ),
+        profiles=profiles,
+        schools=schools,
+        learning_areas=LearningAreaRepository(db),
+        assignments=CoordinatorAssignmentRepository(db),
+    )
+
+    existing = profiles.by_email(email)
+    if existing is not None:
+        if existing.role is UserRole.administrator and existing.admin_type is admin_type:
+            print(f"{email} is already a {admin_type.value}.")
             return 0
 
-        password = read_password()
-        profile = service.register(
-            full_name=args.name,
-            username=username,
-            email=email,
-            password=password,
-            role=UserRole.administrator,
-            school_id=None,
-            learning_area_id=None,
-            # The whole point of this script: the one place a privileged role
-            # may be created without an administrator already signed in.
-            allow_privileged=True,
+        service.assign_role(user_id=existing.id, role=UserRole.administrator)
+        refreshed = profiles.get(existing.id)
+        profiles.update(
+            refreshed,
+            administrator_profile=AdministratorProfile(
+                admin_type=admin_type, department_id=department_id
+            ),
         )
-        session.commit()
-        print(f"Created administrator {profile.email} ({profile.username}).")
-        print("Sign in through the app; everyone else registers and is promoted by this account.")
+        print(f"Promoted {email} to {admin_type.value}.")
         return 0
-    except Exception as exc:
-        session.rollback()
-        sys.exit(f"{type(exc).__name__}: {exc}")
-    finally:
-        session.close()
+
+    if profiles.by_username(username) is not None:
+        sys.exit(f"The username {username!r} is taken. Pass a different --username.")
+
+    password = read_password()
+    profile = service.register(
+        last_name=args.last_name,
+        first_name=args.first_name,
+        middle_initial=args.middle_initial,
+        suffix=args.suffix,
+        username=username,
+        email=email,
+        password=password,
+        role=UserRole.administrator,
+        school_id=None,
+        learning_area_id=None,
+        # The one account that skips confirmation: there is nobody to grant it
+        # access, and SMTP may not be configured yet, so a code it could never
+        # receive would lock the system before it opened.
+        require_confirmation=False,
+    )
+    profiles.update(
+        profile,
+        administrator_profile=AdministratorProfile(
+            admin_type=admin_type, department_id=department_id
+        ),
+    )
+
+    print(f"Created {admin_type.value} {profile.formal_name} ({profile.username}).")
+    print("Sign in through the app; everyone else registers and is promoted by this account.")
+    return 0
 
 
 if __name__ == "__main__":

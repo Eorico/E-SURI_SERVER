@@ -1,8 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
-sqlalchemy>=2.0
-psycopg2-binary>=2.9
-supabase>=2.7
+pymongo>=4.9
+argon2-cffi>=23.1
 pydantic>=2.8
 pydantic-settings>=2.4
 pyjwt>=2.9
@@ -15,3 +14,11 @@ pandas>=2.2
 openai>=1.40          # template mapping only; optional at runtime
 email-validator>=2.0
 openpyxl>=3.1
+
+# --- tests only ------------------------------------------------------------
+# mongomock is an in-process MongoDB, which is what lets the suite run with no
+# cluster and no network. It implements the query language but not the server,
+# so it does NOT enforce unique indexes or run TTL deletion - those are checked
+# against the real cluster by scripts/doctor.py.
+pytest>=8.0
+mongomock>=4.3

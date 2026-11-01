@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from api.core.exceptions import NotFoundError
 from api.models.enums import LEAST_MASTERED_COUNT, ResponseFlag
-from api.models.tables import Assessment, ItemAnalysis, Response, Submission
+from api.models.documents import Assessment, ItemAnalysis, Response, Submission
 from api.repositories.analysis_repository import ItemAnalysisRepository
 from api.repositories.assessment_repository import AnswerKeyRepository, AssessmentRepository
 from api.repositories.submission_repository import SubmissionRepository

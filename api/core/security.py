@@ -1,9 +1,11 @@
 """Authentication and authorisation.
 
-Supabase issues the JWT; this module only verifies it and resolves the caller's
-profile. `RoleChecker` is a callable dependency, so a route declares the roles it
-needs declaratively and no controller hand-rolls a role test (DRY, and new roles
-need no change here — OCP).
+This server issues the JWT (`api.core.tokens`); this module verifies it and
+resolves the caller's profile.
+
+`RoleChecker` is a callable dependency, so a route declares the roles it needs
+declaratively and no controller hand-rolls a role test (DRY, and new roles need
+no change here — OCP).
 """
 
 from __future__ import annotations
@@ -11,20 +13,20 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-import jwt
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from api.core.config import settings
-from api.core.database import get_db
 from api.core.exceptions import AuthenticationError, PermissionDeniedError
 from api.core.logging import user_id_var
-from api.models.enums import UserRole
-from api.models.tables import Profile
+from api.core.mongo import get_db
+from api.core.tokens import decode_access_token
+from api.models.documents import Profile
+from api.models.enums import AdminType, UserRole
 from api.repositories.profile_repository import ProfileRepository
 
-bearer_scheme = HTTPBearer(auto_error=False, description="Supabase access token")
+bearer_scheme = HTTPBearer(auto_error=False, description="E-SURI access token")
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,28 @@ class Principal:
     def learning_area_id(self) -> uuid.UUID | None:
         return self.profile.learning_area_id
 
+    @property
+    def admin_type(self) -> AdminType | None:
+        """Which kind of administrator, or None for every other role."""
+        return self.profile.admin_type
+
+    @property
+    def department_id(self) -> uuid.UUID | None:
+        """The department a master teacher oversees; None for everyone else."""
+        return self.profile.department_id
+
+    def is_admin_type(self, *types: AdminType) -> bool:
+        return self.role is UserRole.administrator and self.admin_type in types
+
+    @property
+    def sees_whole_school(self) -> bool:
+        """True for the two administrator types whose reports are school-wide.
+
+        A master teacher is deliberately excluded: their analytics are their
+        department's, which is the point of the filter.
+        """
+        return self.is_admin_type(AdminType.assessment_coordinator, AdminType.school_head)
+
     def is_at_least(self, role: UserRole) -> bool:
         return _RANK[self.role] >= _RANK[role]
 
@@ -72,21 +96,13 @@ _RANK: dict[UserRole, int] = {
 
 
 def decode_token(token: str) -> dict:
-    """Verify signature, audience and expiry. Raises on anything unexpected."""
-    if not settings.SUPABASE_JWT_SECRET:
-        raise AuthenticationError("Authentication is not configured on this server.")
-    try:
-        return jwt.decode(
-            token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience=settings.SUPABASE_JWT_AUDIENCE,
-            options={"require": ["exp", "sub"], "verify_exp": True, "verify_aud": True},
-        )
-    except jwt.ExpiredSignatureError as exc:
-        raise AuthenticationError("Your session has expired. Sign in again.") from exc
-    except jwt.PyJWTError as exc:
-        raise AuthenticationError("Invalid authentication token.") from exc
+    """Verify signature, audience and expiry. Raises on anything unexpected.
+
+    Kept as a thin alias over `api.core.tokens.decode_access_token`: the tests
+    and the scripts call it by this name, and the verification rules belong
+    beside the code that issues the tokens rather than being stated twice.
+    """
+    return decode_access_token(token)
 
 
 def get_current_user(
@@ -111,9 +127,10 @@ def get_current_user(
 
 def get_principal(
     user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Database = Depends(get_db),
 ) -> Principal:
-    profile = ProfileRepository(db).get(user.id)
+    # One read: the role details are embedded, so there is nothing to join.
+    profile = ProfileRepository(db).with_role_details(user.id)
     if profile is None:
         raise PermissionDeniedError("This account has no profile yet. Contact your administrator.")
     if not profile.is_active:
@@ -140,6 +157,40 @@ require_teacher = RoleChecker(
 )
 require_coordinator = RoleChecker(UserRole.subject_coordinator, UserRole.administrator)
 require_admin = RoleChecker(UserRole.administrator)
+
+
+class AdminTypeChecker:
+    """Narrows `administrator` to particular kinds of administrator.
+
+    All three types hold the same role, so the role check alone cannot tell
+    them apart - a school head reads reports but does not open a term, and a
+    master teacher sees one department rather than the school.
+    """
+
+    def __init__(self, *allowed: AdminType, reason: str):
+        self.allowed = frozenset(allowed)
+        self.reason = reason
+
+    def __call__(self, principal: Principal = Depends(require_admin)) -> Principal:
+        if principal.admin_type not in self.allowed:
+            raise PermissionDeniedError(self.reason)
+        return principal
+
+
+#: Opening and closing a cycle, and releasing certificates, belong to the one
+#: person who runs the assessment calendar.
+require_assessment_coordinator = AdminTypeChecker(
+    AdminType.assessment_coordinator,
+    reason="Only the assessment coordinator can do this.",
+)
+
+#: Reading the whole school's reports: the coordinator and the school head.
+#: A master teacher reads their department through the department filter.
+require_school_wide_reader = AdminTypeChecker(
+    AdminType.assessment_coordinator,
+    AdminType.school_head,
+    reason="This report covers the whole school; your account is scoped to a department.",
+)
 
 
 def client_ip(request: Request) -> str:

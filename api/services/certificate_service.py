@@ -18,7 +18,7 @@ from api.models.enums import (
     CertificateStatus,
     CertificateType,
 )
-from api.models.tables import Certificate, Student
+from api.models.documents import Certificate, Student
 from api.repositories.analysis_repository import CertificateRepository
 from api.repositories.class_repository import ClassRepository
 from api.repositories.submission_repository import SubmissionRepository

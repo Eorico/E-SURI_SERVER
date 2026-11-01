@@ -5,7 +5,7 @@ defects found, leaving all formatting, formulas, merged ranges and macros
 untouched.
 
     python scripts/blank_eqwart_template.py "TERM 1 EXAM_ GRADE 11.xlsm" \
-        supabase/templates/eqwart_grade11.xlsm
+        db/templates/eqwart_grade11.xlsm
 
 The layout is discovered by `HeuristicAnalyzer`, not hard-coded, so this works
 on a reissued workbook too. Administrators normally upload templates through

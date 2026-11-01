@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, status
 
 from api.controllers.workspace_controller import ClassController
-from api.core.security import Principal, require_teacher
+from api.core.security import Principal, require_coordinator, require_teacher
 from api.deps import get_class_service, get_learning_areas, get_schools, get_sections
 from api.repositories.school_repository import (
     LearningAreaRepository,
@@ -15,10 +15,13 @@ from api.repositories.school_repository import (
     SectionRepository,
 )
 from api.services.class_service import ClassService
+from api.core.exceptions import ConflictError, ValidationError
+from api.models.documents import LearningArea
 from dto.schemas import (
     ClassCreate,
     ClassOut,
     EnrollRequest,
+    LearningAreaCreate,
     LearningAreaOut,
     SchoolOut,
     SectionOut,
@@ -49,6 +52,42 @@ def learning_areas(
         areas.ordered(principal.school_id) if principal.school_id else areas.list()
     )
     return [LearningAreaOut.model_validate(area) for area in records]
+
+
+@router.post(
+    "/learning-areas", response_model=LearningAreaOut, status_code=status.HTTP_201_CREATED
+)
+def create_learning_area(
+    payload: LearningAreaCreate,
+    principal: Principal = Depends(require_coordinator),
+    areas: LearningAreaRepository = Depends(get_learning_areas),
+) -> LearningAreaOut:
+    """Add a subject.
+
+    A subject is a sheet in the EQWART workbook, so creating one here is what
+    makes that sheet appear on the next export - the exporter cuts it from the
+    template's blank sheet. Coordinators and administrators only: a teacher
+    adding a subject would change the shape of the document every other
+    teacher submits into.
+    """
+    if principal.school_id is None:
+        raise ValidationError("Your account is not attached to a school yet.")
+
+    if areas.by_code(principal.school_id, payload.code) is not None:
+        raise ConflictError(f"A subject with the code {payload.code} already exists.")
+
+    area = areas.add(
+        LearningArea(
+            school_id=principal.school_id,
+            code=payload.code,
+            name=payload.name,
+            # The tab is what the exporter looks for, so it defaults to the
+            # subject's own name rather than something the user must invent.
+            sheet_name=payload.sheet_name or payload.name,
+            grade_level=payload.grade_level,
+        )
+    )
+    return LearningAreaOut.model_validate(area)
 
 
 @router.get("/sections", response_model=list[SectionOut])

@@ -15,6 +15,7 @@ from api.routes import (
     auth,
     certificates,
     classes,
+    files,
     health,
     reports,
     scans,
@@ -31,6 +32,7 @@ ROUTERS: tuple[APIRouter, ...] = (
     reports.router,
     certificates.router,
     templates.router,
+    files.router,
 )
 
 
