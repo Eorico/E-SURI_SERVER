@@ -247,6 +247,37 @@ and then lets two accounts share an email), and whether the TTL indexes are
 applied. `doctor.py` is where those are checked. It writes nothing, prints
 whether each secret is *set* and never its value, and exits non-zero on failure.
 
+## Logs
+
+```
+08:48:44 AM  [esuri]  INFO:    127.0.0.1:52014 - "GET /api/v1/classes HTTP/1.1" 200 OK   12.4ms
+08:48:45 AM  [esuri]  INFO:    127.0.0.1:52014 - "POST /api/v1/auth/login HTTP/1.1" 401 Unauthorized   88.0ms
+08:48:47 AM  [esuri]  WARNING: sign_in_account_locked  user_id=a3f1b2c4 attempts=10
+```
+
+One aligned line per record: the time on a 12-hour clock, the service tag, the
+level, then either a request line or a message with whatever fields it carried.
+Status codes are coloured by class, so a wall of green with one red line in it
+reads at a glance.
+
+`LOG_FORMAT_MODE` chooses the format and defaults to `auto` - **pretty in
+development, JSON in production**. That is not a preference: a log aggregator
+can do nothing with colour codes, and nobody can read a wall of JSON while
+debugging. Colour is dropped when stdout is not a terminal, so redirecting to a
+file gives a readable file; `NO_COLOR=1` turns it off anywhere.
+
+Two things are deliberately quiet. uvicorn's own access logger is disabled,
+because `RequestContextMiddleware` already logs every request and knows the
+correlation id and the real duration - both enabled would print each request
+twice. And the chatty libraries (`httpx`, `watchfiles` under `--reload`,
+`pymongo`) are raised to WARNING so they do not bury the requests; a real
+problem from any of them still surfaces.
+
+Everything is redacted on the way out, in both formats: bearer tokens, bare
+JWTs, `password=`/`api_key=` pairs, and credentials inside a connection string
+(`mongodb+srv://user:[redacted]@cluster...`, keeping the host so you can still
+tell which one it was).
+
 ## Run
 
 ```bash

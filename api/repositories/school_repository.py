@@ -7,7 +7,7 @@ import uuid
 from pymongo import ASCENDING
 
 from api.core.cache import cached
-from api.models.documents import LearningArea, School, Section
+from api.models.documents import Department, LearningArea, School, Section
 from api.repositories.base import MongoRepository
 
 
@@ -22,6 +22,27 @@ class SchoolRepository(MongoRepository[School]):
         about once a year.
         """
         return self.first()
+
+
+class DepartmentRepository(MongoRepository[Department]):
+    """The five groupings a subject reports under.
+
+    A master teacher is scoped to exactly one, so this is read on the sign-up
+    form as well as everywhere their reports are filtered.
+    """
+
+    model = Department
+    default_sort = (("name", ASCENDING),)
+    #: An administrator's embedded details carry a department id, and a
+    #: hydrated class reaches a department through its subject.
+    depends_on = ("users", "learning_areas")
+
+    @cached()
+    def ordered(self, school_id: uuid.UUID) -> list[Department]:
+        return self.list(school_id=school_id)
+
+    def by_code(self, school_id: uuid.UUID, code: str) -> Department | None:
+        return self.first(school_id=school_id, code=code.upper())
 
 
 class LearningAreaRepository(MongoRepository[LearningArea]):

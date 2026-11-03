@@ -35,14 +35,24 @@ from api.core.passwords import (
     waste_a_verification,
 )
 from api.core import tokens
-from api.models.documents import PURPOSE_RESET, PURPOSE_SIGNUP, Profile, Session
-from api.models.enums import UserRole
+from api.models.documents import (
+    PURPOSE_RESET,
+    PURPOSE_SIGNUP,
+    AdministratorProfile,
+    Profile,
+    Session,
+)
+from api.models.enums import AdminType, UserRole
 from api.repositories.auth_repository import EmailTokenRepository, SessionRepository
 from api.repositories.profile_repository import (
     CoordinatorAssignmentRepository,
     ProfileRepository,
 )
-from api.repositories.school_repository import LearningAreaRepository, SchoolRepository
+from api.repositories.school_repository import (
+    DepartmentRepository,
+    LearningAreaRepository,
+    SchoolRepository,
+)
 from api.services.mail_service import (
     Mailer,
     build_mailer,
@@ -406,12 +416,14 @@ class AuthService:
         learning_areas: LearningAreaRepository,
         assignments: CoordinatorAssignmentRepository,
         mailer: Mailer | None = None,
+        departments: DepartmentRepository | None = None,
     ):
         self.gateway = gateway
         self.profiles = profiles
         self.schools = schools
         self.learning_areas = learning_areas
         self.assignments = assignments
+        self.departments = departments
         self.mailer = mailer or build_mailer()
 
     def register(
@@ -427,6 +439,8 @@ class AuthService:
         role: UserRole,
         school_id: uuid.UUID | None,
         learning_area_id: uuid.UUID | None,
+        admin_type: AdminType | None = None,
+        department_id: uuid.UUID | None = None,
         require_confirmation: bool = True,
     ) -> Profile:
         """Create the account, then mail the code that activates it.
@@ -453,6 +467,11 @@ class AuthService:
         if effective_role is UserRole.subject_coordinator and learning_area_id is None:
             raise ValidationError("A coordinator must be scoped to a learning area.")
 
+        # Which kind of administrator, and what they oversee. Checked here as
+        # well as in the DTO because this is reachable from the bootstrap
+        # script, which does not come through one.
+        role_details = self._administrator_details(effective_role, admin_type, department_id)
+
         school_id = school_id or (school.id if (school := self.schools.current()) else None)
 
         credentials = self.gateway.prepare_account(email, password)
@@ -468,6 +487,7 @@ class AuthService:
                 email=email,
                 school_id=school_id,
                 password_hash=credentials.password_hash,
+                administrator_profile=role_details,
                 # `require_confirmation=False` is for the first administrator,
                 # created on the server by whoever is setting the system up:
                 # there is nobody to grant them access and SMTP may not be
@@ -636,6 +656,38 @@ class AuthService:
             self.profiles.update(profile, role=role)
 
         return profile
+
+    def _administrator_details(
+        self,
+        role: UserRole,
+        admin_type: AdminType | None,
+        department_id: uuid.UUID | None,
+    ) -> AdministratorProfile | None:
+        """Build the embedded administrator record, or refuse the combination."""
+        if role is not UserRole.administrator:
+            if admin_type is not None:
+                raise ValidationError(
+                    "Only an administrator account has an administrator type."
+                )
+            return None
+
+        if admin_type is None:
+            raise ValidationError("Choose which kind of administrator this account is.")
+
+        if admin_type is AdminType.master_teacher:
+            if department_id is None:
+                raise ValidationError("A master teacher oversees one department; choose it.")
+            # The department has to exist, or their reports would filter on an
+            # id that matches nothing and come back permanently empty.
+            if self.departments is not None and self.departments.get(department_id) is None:
+                raise ValidationError("That department does not exist.")
+        elif department_id is not None:
+            raise ValidationError(
+                "Only a master teacher is scoped to a department - an assessment "
+                "coordinator and a school head see the whole school."
+            )
+
+        return AdministratorProfile(admin_type=admin_type, department_id=department_id)
 
     def _set_learning_area(self, profile: Profile, learning_area_id: uuid.UUID | None) -> None:
         """A coordinator's area is embedded beside the profile, never on it."""

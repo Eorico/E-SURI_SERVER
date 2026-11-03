@@ -20,7 +20,7 @@ import pytest
 from api.core.exceptions import AuthenticationError, ConflictError
 from api.models import documents as D
 from api.models.documents import PURPOSE_RESET, PURPOSE_SIGNUP
-from api.models.enums import UserRole
+from api.models.enums import AdminType, UserRole
 from api.repositories.auth_repository import (
     MAX_CODE_ATTEMPTS,
     EmailTokenRepository,
@@ -128,9 +128,14 @@ class TestRegistration:
     def test_the_role_asked_for_is_the_role_created(self, service):
         """Registration is open, and an administrator account stays one."""
         profile = register(
-            service, role=UserRole.administrator, username="admin1", email="a@b.ph"
+            service,
+            role=UserRole.administrator,
+            admin_type=AdminType.assessment_coordinator,
+            username="admin1",
+            email="a@b.ph",
         )
         assert profile.role is UserRole.administrator
+        assert profile.admin_type is AdminType.assessment_coordinator
 
     def test_a_duplicate_address_is_refused(self, service):
         register(service)
@@ -176,6 +181,7 @@ class TestRegistration:
         profile = register(
             service,
             role=UserRole.administrator,
+            admin_type=AdminType.school_head,
             require_confirmation=False,
         )
         assert profile.email_confirmed_at is not None
@@ -287,7 +293,12 @@ class TestSignIn:
         assert profile.email == EMAIL
 
     def test_an_administrator_signs_in_by_username(self, service):
-        register(service, role=UserRole.administrator, require_confirmation=False)
+        register(
+            service,
+            role=UserRole.administrator,
+            admin_type=AdminType.assessment_coordinator,
+            require_confirmation=False,
+        )
         session, profile = service.sign_in(username="mdelacruz", password=PASSWORD)
         assert profile.role is UserRole.administrator
         assert session.access_token
@@ -512,3 +523,30 @@ def test_a_lapsed_code_is_refused(db, service, monkeypatch):
     )
     with pytest.raises(AuthenticationError):
         service.verify_signup_code(email=EMAIL, code=code)
+
+
+def test_a_resent_code_is_found_even_when_issued_in_the_same_millisecond(db, service):
+    """Superseding and issuing happen back to back, so both can share a timestamp.
+
+    A BSON datetime holds milliseconds. Picking "the newest by date" therefore
+    hits a tie, and MongoDB returns ties in no defined order - so the spent
+    token could be chosen and the person told their brand-new code had expired,
+    with no way to ever obtain a working one. The unspent token is selected
+    explicitly instead.
+    """
+    from datetime import datetime, timezone
+
+    register(service)
+    first = mailed_code(service)
+    service.resend_signup_code(email=EMAIL)
+    second = mailed_code(service)
+
+    # Force the tie the millisecond resolution would produce under load.
+    same_instant = datetime.now(timezone.utc)
+    db["email_tokens"].update_many({}, {"$set": {"created_at": same_instant}})
+
+    assert first != second
+    with pytest.raises(AuthenticationError):
+        service.verify_signup_code(email=EMAIL, code=first)
+    session, _ = service.verify_signup_code(email=EMAIL, code=second)
+    assert session.access_token

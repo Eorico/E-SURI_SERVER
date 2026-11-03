@@ -47,6 +47,23 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
 
+    # --- Logging ----------------------------------------------------------
+    #: "pretty" for a person watching a terminal, "json" for anything that
+    #: parses logs. "auto" picks: pretty in development, JSON in production -
+    #: a log aggregator cannot do much with colour codes, and nobody can read
+    #: a wall of JSON while debugging.
+    LOG_FORMAT_MODE: Literal["auto", "pretty", "json"] = "auto"
+    #: The name in brackets on every line. Short, because it is repeated on
+    #: every single line and its job is to say which service spoke.
+    LOG_TAG: str = "esuri+server"
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    @property
+    def LOG_FORMAT(self) -> str:
+        if self.LOG_FORMAT_MODE != "auto":
+            return self.LOG_FORMAT_MODE
+        return "json" if self.is_production else "pretty"
+
     # --- Authentication ---------------------------------------------------
     #: This server issues and verifies its own tokens: password storage, token
     #: signing, confirmation codes and sign-out all happen here, and there is

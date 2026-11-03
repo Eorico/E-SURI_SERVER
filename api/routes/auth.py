@@ -19,12 +19,25 @@ from fastapi import APIRouter, Depends, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from api.core.security import Principal, bearer_scheme, get_principal, require_admin
-from api.deps import get_auth_service, get_profiles
+from api.deps import (
+    get_auth_service,
+    get_departments,
+    get_learning_areas,
+    get_profiles,
+    get_schools,
+)
 from api.models.enums import UserRole
 from api.repositories.profile_repository import ProfileRepository
 from api.services.auth_service import AuthService, AuthSession
 from dto.common import Message
+from api.repositories.school_repository import (
+    DepartmentRepository,
+    LearningAreaRepository,
+    SchoolRepository,
+)
 from dto.schemas import (
+    DepartmentOut,
+    LearningAreaOut,
     LoginRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
@@ -34,6 +47,7 @@ from dto.schemas import (
     RegisterRequest,
     ResendCodeRequest,
     SessionOut,
+    SignupOptions,
     VerifyCodeRequest,
 )
 
@@ -120,8 +134,39 @@ def register(payload: RegisterRequest, service: AuthService = Depends(get_auth_s
         role=payload.role,
         school_id=payload.school_id,
         learning_area_id=payload.learning_area_id,
+        admin_type=payload.admin_type,
+        department_id=payload.department_id,
     )
     return ProfileOut.model_validate(profile)
+
+
+@router.get("/signup-options", response_model=SignupOptions)
+def signup_options(
+    departments: DepartmentRepository = Depends(get_departments),
+    areas: LearningAreaRepository = Depends(get_learning_areas),
+    schools: SchoolRepository = Depends(get_schools),
+) -> SignupOptions:
+    """The departments and subjects the sign-up form offers.
+
+    Unauthenticated, because it is read before the account exists. It returns
+    names only - a school's departments and subjects are its published
+    curriculum, so this reveals nothing a prospectus does not, while anything
+    that would say who works there stays behind authentication.
+
+    It is on the AUTH rate-limit tier like the rest of this router.
+    """
+    school = schools.current()
+    school_id = school.id if school else None
+    return SignupOptions(
+        departments=[
+            DepartmentOut.model_validate(d)
+            for d in (departments.ordered(school_id) if school_id else departments.list())
+        ],
+        learning_areas=[
+            LearningAreaOut.model_validate(a)
+            for a in (areas.ordered(school_id) if school_id else areas.list())
+        ],
+    )
 
 
 @router.post("/password-reset", response_model=Message)

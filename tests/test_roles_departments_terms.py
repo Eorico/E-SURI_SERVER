@@ -184,3 +184,150 @@ def test_every_type_is_recognised_as_an_administrator(admin_type):
 def test_a_type_check_does_not_match_a_different_type():
     principal = principal_for(AdminType.school_head)
     assert not principal.is_admin_type(AdminType.assessment_coordinator)
+
+
+# --------------------------------------------------------------------------- #
+# Registering as an administrator                                             #
+# --------------------------------------------------------------------------- #
+class TestAdministratorRegistration:
+    """The "Position" and "Department" the account spec asks for at sign-up.
+
+    An administrator account carries one of three types, and the type is not
+    decoration: it decides which dashboard they land on and how far their
+    reports reach. An account without one has nowhere to go, so it is refused
+    rather than defaulted - guessing would silently grant or withhold the
+    school-wide view.
+    """
+
+    @pytest.fixture
+    def service(self, db):
+        from api.repositories.auth_repository import (
+            EmailTokenRepository,
+            SessionRepository,
+        )
+        from api.repositories.profile_repository import (
+            CoordinatorAssignmentRepository,
+            ProfileRepository,
+        )
+        from api.repositories.school_repository import (
+            DepartmentRepository,
+            LearningAreaRepository,
+            SchoolRepository,
+        )
+        from api.services.auth_service import AuthService, MongoAuthGateway
+        from api.services.mail_service import NullMailer
+
+        profiles = ProfileRepository(db)
+        return AuthService(
+            gateway=MongoAuthGateway(
+                profiles, SessionRepository(db), EmailTokenRepository(db)
+            ),
+            profiles=profiles,
+            schools=SchoolRepository(db),
+            learning_areas=LearningAreaRepository(db),
+            assignments=CoordinatorAssignmentRepository(db),
+            mailer=NullMailer(),
+            departments=DepartmentRepository(db),
+        )
+
+    def enrol(self, service, **overrides):
+        payload = dict(
+            last_name="Dela Cruz",
+            first_name="Maria",
+            middle_initial=None,
+            suffix=None,
+            username="mdelacruz",
+            email="maria@deped.gov.ph",
+            password="a-long-enough-pass-1!",
+            role=UserRole.subject_teacher,
+            school_id=None,
+            learning_area_id=None,
+        )
+        payload.update(overrides)
+        return service.register(**payload)
+
+    @pytest.mark.parametrize(
+        "admin_type",
+        [AdminType.assessment_coordinator, AdminType.school_head],
+    )
+    def test_the_school_wide_types_register_without_a_department(
+        self, service, admin_type
+    ):
+        profile = self.enrol(
+            service, role=UserRole.administrator, admin_type=admin_type
+        )
+        assert profile.admin_type is admin_type
+        assert profile.department_id is None
+
+    def test_a_master_teacher_registers_with_one(self, service, department):
+        profile = self.enrol(
+            service,
+            role=UserRole.administrator,
+            admin_type=AdminType.master_teacher,
+            department_id=department.id,
+        )
+        assert profile.admin_type is AdminType.master_teacher
+        assert profile.department_id == department.id
+
+    def test_an_administrator_without_a_type_is_refused(self, service):
+        """Defaulting would silently grant or withhold the school-wide view."""
+        from api.core.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.enrol(service, role=UserRole.administrator)
+
+    def test_a_master_teacher_without_a_department_is_refused(self, service):
+        from api.core.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.enrol(
+                service,
+                role=UserRole.administrator,
+                admin_type=AdminType.master_teacher,
+            )
+
+    def test_a_department_that_does_not_exist_is_refused(self, service):
+        """Otherwise their reports filter on an id that matches nothing and
+        come back permanently, inexplicably empty."""
+        from api.core.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.enrol(
+                service,
+                role=UserRole.administrator,
+                admin_type=AdminType.master_teacher,
+                department_id=uuid.uuid4(),
+            )
+
+    def test_a_teacher_cannot_claim_an_administrator_type(self, service):
+        from api.core.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.enrol(
+                service,
+                role=UserRole.subject_teacher,
+                admin_type=AdminType.school_head,
+            )
+
+    def test_a_school_wide_type_cannot_take_a_department(self, service, department):
+        from api.core.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.enrol(
+                service,
+                role=UserRole.administrator,
+                admin_type=AdminType.school_head,
+                department_id=department.id,
+            )
+
+    def test_the_type_survives_to_the_response(self, service):
+        """The client routes on it, so it has to cross the wire."""
+        from dto.schemas import ProfileOut
+
+        profile = self.enrol(
+            service,
+            role=UserRole.administrator,
+            admin_type=AdminType.assessment_coordinator,
+        )
+        published = ProfileOut.model_validate(profile)
+        assert published.admin_type is AdminType.assessment_coordinator

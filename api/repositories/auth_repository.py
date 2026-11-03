@@ -77,13 +77,20 @@ class EmailTokenRepository(MongoRepository[EmailToken]):
     default_sort = (("created_at", DESCENDING),)
 
     def newest_for(self, user_id: uuid.UUID, purpose: str) -> EmailToken | None:
-        """The most recent token of one kind, which is the only live one.
+        """The one unspent token of this kind, if there is one.
 
-        Issuing a new code supersedes the previous one (see `supersede`), so
-        there is never more than one to check - a person who asks for a second
-        code must use the second code.
+        Issuing a new code supersedes the previous one (see `supersede`), so at
+        most one is ever unspent - a person who asks for a second code must use
+        the second code.
+
+        Selected on `consumed_at` rather than by taking the newest by date, and
+        that is not a stylistic choice. A BSON datetime holds milliseconds, so
+        superseding the old token and writing the new one inside the same
+        millisecond gives both the same `created_at`; MongoDB returns ties in
+        no defined order, and picking the spent one would tell the person their
+        brand-new code had expired - with no way to ever get a working one.
         """
-        return self.first(user_id=user_id, purpose=purpose)
+        return self.first(user_id=user_id, purpose=purpose, consumed_at=None)
 
     def supersede(self, user_id: uuid.UUID, purpose: str) -> int:
         """Spend every outstanding token of this kind before issuing another.

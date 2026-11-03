@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -148,6 +149,9 @@ def main() -> int:
         sys.exit(f"The username {username!r} is taken. Pass a different --username.")
 
     password = read_password()
+    # The type goes in with the registration rather than being set afterwards:
+    # an administrator with no type is refused, and a two-step create would
+    # leave one in that state if the second step failed.
     profile = service.register(
         last_name=args.last_name,
         first_name=args.first_name,
@@ -159,16 +163,12 @@ def main() -> int:
         role=UserRole.administrator,
         school_id=None,
         learning_area_id=None,
+        admin_type=admin_type,
+        department_id=uuid.UUID(department_id) if department_id else None,
         # The one account that skips confirmation: there is nobody to grant it
         # access, and SMTP may not be configured yet, so a code it could never
         # receive would lock the system before it opened.
         require_confirmation=False,
-    )
-    profiles.update(
-        profile,
-        administrator_profile=AdministratorProfile(
-            admin_type=admin_type, department_id=department_id
-        ),
     )
 
     print(f"Created {admin_type.value} {profile.formal_name} ({profile.username}).")

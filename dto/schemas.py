@@ -15,6 +15,7 @@ from datetime import date as date_type, datetime
 from pydantic import EmailStr, Field, field_validator, model_validator
 
 from api.models.enums import (
+    AdminType,
     AssessmentStatus,
     AssessmentType,
     CertificateStatus,
@@ -72,7 +73,39 @@ class RegisterRequest(NameParts):
     password: str = Field(min_length=12, max_length=128)
     role: UserRole = UserRole.subject_teacher
     school_id: uuid.UUID | None = None
+    #: Required for a subject coordinator: the subject they are responsible for.
     learning_area_id: uuid.UUID | None = None
+    #: Which kind of administrator. Required when the role is `administrator`
+    #: and refused otherwise - it is what decides which dashboard they land on
+    #: and how far their reports reach.
+    admin_type: AdminType | None = None
+    #: Required for a master teacher, refused for everyone else: the other two
+    #: administrator types see the whole school, so there is nothing to scope.
+    department_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _position_is_complete(self):
+        """The combinations the account spec allows, refused at the edge.
+
+        The service checks these too - it is reachable from scripts, which do
+        not come through a DTO - but refusing here means the form gets a
+        field-level error rather than a generic failure.
+        """
+        if self.role is UserRole.administrator:
+            if self.admin_type is None:
+                raise ValueError("Choose which kind of administrator this account is.")
+        elif self.admin_type is not None:
+            raise ValueError("Only an administrator account has an administrator type.")
+
+        if self.admin_type is AdminType.master_teacher:
+            if self.department_id is None:
+                raise ValueError("A master teacher oversees one department; choose it.")
+        elif self.department_id is not None:
+            raise ValueError(
+                "Only a master teacher is scoped to a department - an assessment "
+                "coordinator and a school head see the whole school."
+            )
+        return self
 
     @field_validator("username")
     @classmethod
@@ -178,9 +211,15 @@ class ProfileOut(ORMDto):
     phone: str | None = None
     is_active: bool
     school_id: uuid.UUID | None = None
-    #: Present for a subject coordinator; null for every other role, because it
-    #: lives in `coordinator_assignments` rather than on the profile.
+    #: Present for a subject coordinator; null for every other role, because
+    #: it is embedded beside the profile rather than stored on it.
     learning_area_id: uuid.UUID | None = None
+    #: Which kind of administrator, and the department a master teacher
+    #: oversees. Both null for every other role. The client needs them to send
+    #: an administrator to the right dashboard - the three share a role but not
+    #: a workspace - and to scope what it shows them.
+    admin_type: AdminType | None = None
+    department_id: uuid.UUID | None = None
 
 
 class ProfileUpdate(DTO):
@@ -229,6 +268,25 @@ class SchoolOut(ORMDto):
     division: str | None = None
     cluster: str | None = None
     school_year: str
+
+
+class DepartmentOut(ORMDto):
+    id: uuid.UUID
+    code: str
+    name: str
+
+
+class SignupOptions(ORMDto):
+    """What the registration form needs before anyone has an account.
+
+    Names only - no counts, no staff, nothing about who holds which post. A
+    school's departments and subjects are its published curriculum, so this
+    reveals nothing the prospectus does not, while anything that would say who
+    works there stays behind authentication.
+    """
+
+    departments: list[DepartmentOut]
+    learning_areas: list[LearningAreaOut]
 
 
 class LearningAreaOut(ORMDto):

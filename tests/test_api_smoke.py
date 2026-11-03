@@ -236,7 +236,7 @@ def test_a_teacher_cannot_reach_an_administrator_route(client, mailbox):
 
 def test_an_administrator_can(client, mailbox):
     """The same route, with the role that is allowed it."""
-    register(client, role="administrator")
+    register(client, role="administrator", admin_type="assessment_coordinator")
     session = client.post(
         "/api/v1/auth/verify-code", json={"email": EMAIL, "code": code_from(mailbox)}
     ).json()

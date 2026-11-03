@@ -34,6 +34,7 @@ from api.repositories.profile_repository import (
     ProfileRepository,
 )
 from api.repositories.school_repository import (
+    DepartmentRepository,
     LearningAreaRepository,
     SchoolRepository,
     SectionRepository,
@@ -146,6 +147,7 @@ def get_auth_service(db: Database = Depends(get_db)) -> AuthService:
             sessions=SessionRepository(db),
             email_tokens=EmailTokenRepository(db),
         ),
+        departments=DepartmentRepository(db),
         profiles=ProfileRepository(db),
         schools=SchoolRepository(db),
         learning_areas=LearningAreaRepository(db),
@@ -184,6 +186,10 @@ def get_profiles(db: Database = Depends(get_db)) -> ProfileRepository:
 
 def get_schools(db: Database = Depends(get_db)) -> SchoolRepository:
     return SchoolRepository(db)
+
+
+def get_departments(db: Database = Depends(get_db)) -> DepartmentRepository:
+    return DepartmentRepository(db)
 
 
 def get_learning_areas(db: Database = Depends(get_db)) -> LearningAreaRepository:

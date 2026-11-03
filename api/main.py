@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging("DEBUG" if settings.DEBUG else "INFO")
+    configure_logging("DEBUG" if settings.DEBUG else settings.LOG_LEVEL)
     # `message` is the line a person reads when they start the server; `event`
     # is the stable key a log search filters on. Keeping them apart means the
     # wording can change without breaking anything that greps for api_start.
